@@ -1,13 +1,37 @@
+using Microsoft.EntityFrameworkCore;
+using MongoDB.Driver;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// ==========================================
+// 1. CẤU HÌNH SQL SERVER (Cho Thành viên 1)
+// ==========================================
+var sqlConnectionString = builder.Configuration.GetConnectionString("SqlServerConnection");
+// TODO (Thành viên 1): Khi tạo class AppDbContext ở Tuần 2, hãy bỏ comment dòng bên dưới
+// builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlServer(sqlConnectionString));
+
+// ==========================================
+// 2. CẤU HÌNH MONGODB (Cho Thành viên 2)
+// ==========================================
+var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDbConnection");
+var mongoDbName = builder.Configuration.GetSection("MongoDbSettings:DatabaseName").Value;
+
+builder.Services.AddSingleton<IMongoClient>(new MongoClient(mongoConnectionString));
+builder.Services.AddScoped(sp => 
+{
+    var client = sp.GetRequiredService<IMongoClient>();
+    return client.GetDatabase(mongoDbName);
+});
+
+// ==========================================
+// 3. CẤU HÌNH API & SWAGGER
+// ==========================================
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-var app = builder.Build();
+var app = builder.ApplicationBuilder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -15,30 +39,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
+app.UseAuthorization();
+app.MapControllers();
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

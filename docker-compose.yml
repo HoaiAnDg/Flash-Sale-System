@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  mongo1:
+    image: mongo:6.0
+    container_name: flashsale-mongo
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:
