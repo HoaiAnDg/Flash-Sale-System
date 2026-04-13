@@ -1,9 +1,35 @@
+using MongoDB.Driver;
+using FlashSaleMarketplace.Services; // Nhớ đổi tên namespace này cho đúng với project của bạn
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// 1. CHUYỂN ĐỔI SANG MÔ HÌNH CONTROLLER
+// Template cũ dùng Minimal API, hệ thống của chúng ta dùng Controller nên cần khai báo dòng này
+builder.Services.AddControllers();
+
+// Cấu hình Swagger để test API giao diện Web
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// =========================================================================
+// 2. CẤU HÌNH KẾT NỐI MONGODB & INJECT DỊCH VỤ
+// Lấy chuỗi kết nối từ file appsettings.json
+var mongoConnectionString = builder.Configuration.GetSection("MongoDbSettings:ConnectionString").Value;
+var mongoDbName = builder.Configuration.GetSection("MongoDbSettings:DatabaseName").Value;
+
+// Đăng ký MongoClient (Dùng AddSingleton vì ứng dụng chỉ cần 1 Connection Pool duy nhất)
+builder.Services.AddSingleton<IMongoClient>(new MongoClient(mongoConnectionString));
+
+// Đăng ký Database context
+builder.Services.AddScoped<IMongoDatabase>(sp => 
+{
+    var client = sp.GetRequiredService<IMongoClient>();
+    return client.GetDatabase(mongoDbName);
+});
+
+// Đăng ký CartService để Controller có thể gọi ra dùng
+builder.Services.AddScoped<CartService>();
+// =========================================================================
 
 var app = builder.Build();
 
@@ -16,29 +42,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
+// 3. MAP CONTROLLERS
+// Báo cho .NET biết đường dẫn API sẽ được định tuyến vào các file trong thư mục Controllers
+app.MapControllers();
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
