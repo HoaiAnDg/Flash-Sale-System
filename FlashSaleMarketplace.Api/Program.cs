@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
+using FlashSaleMarketplace.Services; // Thêm namespace để gọi code của Hoài Ân
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,11 +18,14 @@ var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDbCo
 var mongoDbName = builder.Configuration.GetSection("MongoDbSettings:DatabaseName").Value;
 
 builder.Services.AddSingleton<IMongoClient>(new MongoClient(mongoConnectionString));
-builder.Services.AddScoped(sp => 
+builder.Services.AddScoped<IMongoDatabase>(sp => 
 {
     var client = sp.GetRequiredService<IMongoClient>();
     return client.GetDatabase(mongoDbName);
 });
+
+// [THÊM MỚI TỪ HOÀI ÂN]: Đăng ký CartService để Controller có thể sử dụng
+builder.Services.AddScoped<CartService>();
 
 // ==========================================
 // 3. CẤU HÌNH API & SWAGGER
@@ -30,13 +34,17 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-var app = builder.ApplicationBuilder.Build();
+var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// GIỮ NGUYÊN CODE Ở MÁY BẠN: Phục vụ file tĩnh (Giao diện Web React)
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();
