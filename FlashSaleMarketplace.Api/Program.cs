@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
-using FlashSaleMarketplace.Services; // Thêm namespace để gọi code của Hoài Ân
+using FlashSaleMarketplace.Api.Services; // Thêm namespace để gọi code của Hoài Ân
 
 var builder = WebApplication.CreateBuilder(args);
 
