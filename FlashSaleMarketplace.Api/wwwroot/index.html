@@ -12,18 +12,45 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState } = React;
+        const { useState, useEffect } = React;
 
         function App() {
+            const [products, setProducts] = useState([]);
             const [cart, setCart] = useState([]);
 
-            // TODO: Sẽ gọi API MongoDB của Ân bằng fetch()
+            // 1. Tự động gọi API lấy danh mục
+            useEffect(() => {
+                fetch('/api/catalog/flash-sale-items')
+                    .then(res => res.json())
+                    .then(response => {
+                        if(response.success) {
+                            setProducts(response.data);
+                        }
+                    });
+            }, []);
+
+            // 2. Gọi API thêm vào giỏ hàng
             const addToCart = (product) => {
-                setCart([...cart, product]);
-                alert(`Đã đẩy lệnh thêm ${product.name} vào giỏ hàng MongoDB!`);
+                fetch('/api/cart/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        variantId: product.variantId, 
+                        productName: product.productName, 
+                        variantName: product.variantName,
+                        flashSalePrice: product.flashSalePrice 
+                    })
+                })
+                .then(res => res.json())
+                .then(response => {
+                    if(response.success) {
+                        setCart([...cart, response.data]);
+                        console.log(response.message);
+                    }
+                });
             };
 
-            // TODO: Sẽ gọi API SQL Server của Bảo bằng fetch()
+            // 3. Hàm Chốt đơn (Sẽ code thật ở Tuần 3)
             const checkout = () => {
                 alert("Đã đẩy lệnh Checkout vào luồng Saga!");
                 setCart([]);
@@ -31,18 +58,21 @@
 
             return (
                 <div className="max-w-6xl mx-auto grid grid-cols-3 gap-8">
-                    {/* Phần Danh mục Sản phẩm */}
+                    {/* Danh mục */}
                     <div className="col-span-2 bg-white p-6 rounded-lg shadow-md">
                         <h2 className="text-2xl font-bold mb-4">🛒 Danh mục Sản phẩm (SQL Server)</h2>
                         <div className="grid grid-cols-2 gap-4">
-                            {[1, 2, 3].map(id => (
-                                <div key={id} className="border p-4 rounded flex justify-between items-center">
+                            {products.map(p => (
+                                <div key={p.variantId} className="border p-4 rounded flex justify-between items-center hover:shadow-lg transition">
                                     <div>
-                                        <h3 className="font-bold">Sản phẩm Flash Sale {id}</h3>
-                                        <p className="text-red-500 font-semibold">99.000đ</p>
+                                        <h3 className="font-bold text-lg">{p.productName}</h3>
+                                        <p className="text-gray-500 text-sm mb-2">Phân loại: {p.variantName}</p>
+                                        <p className="text-red-600 font-bold text-xl">
+                                            {p.flashSalePrice.toLocaleString('vi-VN')} đ
+                                        </p>
                                     </div>
-                                    <button onClick={() => addToCart({ id, name: `Sản phẩm ${id}`, price: 99000 })} 
-                                            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                                    <button onClick={() => addToCart(p)} 
+                                            className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 font-bold">
                                         Thêm
                                     </button>
                                 </div>
@@ -50,21 +80,22 @@
                         </div>
                     </div>
 
-                    {/* Phần Giỏ hàng siêu tốc */}
+                    {/* Giỏ hàng */}
                     <div className="bg-white p-6 rounded-lg shadow-md h-fit">
                         <h2 className="text-2xl font-bold mb-4">⚡ Giỏ hàng (MongoDB)</h2>
                         {cart.length === 0 ? (
-                            <p className="text-gray-500">Giỏ hàng trống.</p>
+                            <p className="text-gray-500 italic">Giỏ hàng đang trống.</p>
                         ) : (
                             <div>
                                 <ul className="mb-4">
                                     {cart.map((item, idx) => (
-                                        <li key={idx} className="border-b py-2 flex justify-between">
-                                            <span>{item.name}</span>
+                                        <li key={idx} className="border-b py-3 flex flex-col">
+                                            <span className="font-semibold">{item.productName}</span>
+                                            <span className="text-sm text-gray-500">{item.variantName}</span>
                                         </li>
                                     ))}
                                 </ul>
-                                <button onClick={checkout} className="w-full bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 font-bold">
+                                <button onClick={checkout} className="w-full bg-green-600 text-white px-4 py-3 rounded hover:bg-green-700 font-bold text-lg shadow-lg">
                                     Chốt Đơn (Saga Checkout)
                                 </button>
                             </div>

@@ -166,16 +166,3 @@ CREATE TABLE TransactionLogs (
     CreatedAt DATETIME DEFAULT GETDATE()
 );
 GO
-
--- =========================================
--- Index tối ưu truy vấn (Chạy Product_SKU.sql trước sau đó chạy phần này)
--- =========================================
--- CREATE INDEX IX_ProductVariants_ProductID ON ProductVariants(ProductID);
---CREATE INDEX IX_Inventory_VariantID ON Inventory(VariantID);
---CREATE INDEX IX_Inventory_ReservedUntil ON Inventory(ReservedUntil);
---CREATE INDEX IX_FlashSale_Time ON FlashSaleEvents(StartTime, EndTime);
---CREATE INDEX IX_FS_Event ON FlashSaleItems(EventID);
---CREATE INDEX IX_FS_Variant ON FlashSaleItems(VariantID);
---CREATE INDEX IX_Orders_CustomerID ON Orders(CustomerID);
---CREATE INDEX IX_OD_OrderID ON OrderDetails(OrderID);
---CREATE INDEX IX_Payment_OrderID ON Payments(OrderID);
