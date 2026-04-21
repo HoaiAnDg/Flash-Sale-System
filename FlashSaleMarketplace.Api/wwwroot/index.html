@@ -34,7 +34,9 @@
                 fetch('/api/cart/add', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
+                        userId: 1,
+                        quantity: 1,
                         variantId: product.variantId, 
                         productName: product.productName, 
                         variantName: product.variantName,
@@ -50,10 +52,24 @@
                 });
             };
 
-            // 3. Hàm Chốt đơn (Sẽ code thật ở Tuần 3)
+            // 3. Hàm Chốt đơn (Saga Checkout)
             const checkout = () => {
-                alert("Đã đẩy lệnh Checkout vào luồng Saga!");
-                setCart([]);
+                fetch('/api/checkout/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: 1 }) // ID 1 là User giả lập đang đăng nhập
+                })
+                .then(res => res.json())
+                .then(response => {
+                    if(response.success) {
+                        // In kết quả từ SQL Server trả về (Thành công/Hết kho/Hết suất)
+                        alert("KẾT QUẢ CHỐT ĐƠN:\n\n" + response.data.join("\n"));
+                        // Làm rỗng giỏ hàng trên UI
+                        setCart([]);
+                    } else {
+                        alert("Lỗi: " + response.message);
+                    }
+                });
             };
 
             return (

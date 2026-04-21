@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Flash Sale - Admin Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+</head>
+<body class="bg-slate-900 text-white p-8 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function AdminDashboard() {
+            const [topProducts, setTopProducts] = useState([]);
+            const [orderId, setOrderId] = useState('');
+            const [paymentMethod, setPaymentMethod] = useState('VNPay');
+            const [message, setMessage] = useState(null);
+            const [isSuccess, setIsSuccess] = useState(true);
+
+            // 1. Hàm gọi API lấy Top 5
+            const loadTopSelling = () => {
+                fetch('/api/report/top-selling')
+                    .then(res => res.json())
+                    .then(response => {
+                        if(response.success && response.data) {
+                            setTopProducts(response.data);
+                        }
+                    });
+            };
+
+            // Load lần đầu khi mở trang
+            useEffect(() => { loadTopSelling(); }, []);
+
+            // 2. Hàm gọi API giả lập Webhook Thanh toán
+            const handlePayment = () => {
+                if(!orderId) {
+                    setMessage("Vui lòng nhập OrderID!");
+                    setIsSuccess(false);
+                    return;
+                }
+
+                setMessage("Đang xử lý thanh toán...");
+                
+                fetch('/api/payment/callback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ orderId, paymentMethod })
+                })
+                .then(res => res.json())
+                .then(response => {
+                    setMessage(response.message);
+                    setIsSuccess(response.success !== false);
+                    
+                    if(response.success !== false) {
+                        setOrderId(''); // Xóa ô nhập sau khi thành công
+                        loadTopSelling(); // Cập nhật lại biểu đồ ngay lập tức
+                    }
+                })
+                .catch(err => {
+                    setMessage("Lỗi kết nối đến Server!");
+                    setIsSuccess(false);
+                });
+            };
+
+            // Tìm giá trị bán lớn nhất để tính % chiều rộng biểu đồ
+            const maxSold = Math.max(...topProducts.map(p => p.sold), 1);
+
+            return (
+                <div className="max-w-6xl mx-auto grid grid-cols-3 gap-8">
+                    
+                    {/* BẢNG BÁO CÁO TOP 5 (BÊN TRÁI) */}
+                    <div className="col-span-2 bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-emerald-400">📊 Top 5 Bán Chạy Nhất</h2>
+                            <button onClick={loadTopSelling} className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm font-bold transition">
+                                🔄 Làm mới
+                            </button>
+                        </div>
+                        
+                        <div className="space-y-6">
+                            {topProducts.map((p, idx) => (
+                                <div key={idx}>
+                                    <div className="flex justify-between text-sm mb-1">
+                                        <span className="font-semibold text-slate-200">{p.productName}</span>
+                                        <span className="text-emerald-400 font-bold">{p.sold} / {p.total} suất</span>
+                                    </div>
+                                    <div className="w-full bg-slate-700 rounded-full h-4 overflow-hidden">
+                                        <div className="bg-emerald-500 h-4 rounded-full transition-all duration-1000 ease-out" 
+                                             style={{ width: `${(p.sold / maxSold) * 100}%` }}></div>
+                                    </div>
+                                </div>
+                            ))}
+                            {topProducts.length === 0 && <p className="text-slate-400 italic">Chưa có dữ liệu bán hàng.</p>}
+                        </div>
+                    </div>
+
+                    {/* GIẢ LẬP THANH TOÁN SAGA (BÊN PHẢI) */}
+                    <div className="bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700 h-fit">
+                        <h2 className="text-2xl font-bold text-amber-400 mb-4">💳 Webhook Thanh toán</h2>
+                        <p className="text-sm text-slate-400 mb-4">
+                            Nhập mã OrderID (GUID) để hoàn tất chu trình Saga Checkout.
+                        </p>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold mb-2">Mã Đơn Hàng (OrderID):</label>
+                                <input type="text" 
+                                       value={orderId} 
+                                       onChange={(e) => setOrderId(e.target.value)}
+                                       className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono text-sm"
+                                       placeholder="VD: ccc492e-2f9f..." />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-bold mb-2">Cổng Thanh Toán:</label>
+                                <select value={paymentMethod} 
+                                        onChange={(e) => setPaymentMethod(e.target.value)}
+                                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                                    <option value="VNPay">VNPay</option>
+                                    <option value="Momo">Ví Momo</option>
+                                    <option value="ZaloPay">ZaloPay</option>
+                                </select>
+                            </div>
+
+                            <button onClick={handlePayment} 
+                                    className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-lg transition shadow-[0_0_15px_rgba(217,119,6,0.5)]">
+                                🚀 Xác Nhận Thanh Toán
+                            </button>
+
+                            {message && (
+                                <div className={`p-3 rounded text-sm font-bold ${isSuccess ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-500' : 'bg-red-900/50 text-red-400 border border-red-500'}`}>
+                                    {message}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<AdminDashboard />);
+    </script>
+</body>
+</html>

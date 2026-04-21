@@ -11,6 +11,7 @@ namespace FlashSaleMarketplace.Api.Core
         {
             return Ok(new
             {
+                Success = true,
                 StatusCode = 200,
                 Message = message,
                 Data = data
