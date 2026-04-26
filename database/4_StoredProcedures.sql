@@ -34,24 +34,31 @@ BEGIN
     SET @ResultCode = -99;
     SET @ResultMsg  = N'Loi he thong chua xac dinh.';
 
-    -- Biến nội bộ
-    DECLARE @FlashSaleItemID  INT;
-    DECLARE @FlashSalePrice   DECIMAL(18,2);
-    DECLARE @TotalAllocated   INT;
-    DECLARE @SoldQuantity     INT;
-    DECLARE @SaleLimit        INT;
-    DECLARE @EventStart       DATETIME;
-    DECLARE @EventEnd         DATETIME;
-    DECLARE @StockQty         INT;
-    DECLARE @ReservedQty      INT;
-    DECLARE @ProductName      NVARCHAR(200);
-    DECLARE @VariantName      NVARCHAR(200);
-    DECLARE @UserBoughtCount  INT;
+    DECLARE @FlashSaleItemID INT, @FlashSalePrice DECIMAL(18,2), @TotalAllocated INT;
+    DECLARE @SoldQuantity INT, @SaleLimit INT, @EventStart DATETIME, @EventEnd DATETIME;
+    DECLARE @StockQty INT, @ReservedQty INT, @ProductName NVARCHAR(200), @VariantName NVARCHAR(200);
+    DECLARE @UserBoughtCount INT;
 
-    SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-    BEGIN TRANSACTION;
+    -- ========================================================================
+    -- FAIL-FAST: Kiểm tra SaleLimit TRƯỚC KHI mở Transaction (Dùng NOLOCK)
+    -- ========================================================================
+    SELECT @UserBoughtCount = COUNT(*)
+    FROM Orders o WITH(NOLOCK)
+    INNER JOIN OrderDetails od WITH(NOLOCK) ON od.OrderID = o.OrderID
+    WHERE o.CustomerID = @CustomerID AND od.VariantID = @VariantID AND o.Status IN (0, 1);
 
+    SELECT @SaleLimit = SaleLimit FROM FlashSaleItems WITH(NOLOCK) WHERE VariantID = @VariantID AND EventID = @EventID;
+
+    IF @UserBoughtCount >= ISNULL(@SaleLimit, 1)
+    BEGIN
+        SET @ResultCode = -5;
+        SET @ResultMsg  = N'Ban da tham gia mua san pham nay trong chuong trinh nay roi.';
+        RETURN; -- Văng ra ngay, không tốn tài nguyên tạo Transaction
+    END;
+
+    -- Bắt đầu giao dịch với mức cô lập mặc định (READ COMMITTED)
     BEGIN TRY
+        BEGIN TRANSACTION;
 
         -- ════════════════════════════════════════════════════════════════════════
         -- BƯỚC 1: KHÓA ROW FLASH SALE ITEM — Trái tim của cơ chế chống Oversell
@@ -64,8 +71,8 @@ BEGIN
             @SaleLimit       = fsi.SaleLimit,
             @EventStart      = fse.StartTime,
             @EventEnd        = fse.EndTime
-        FROM FlashSaleItems fsi WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
-        INNER JOIN FlashSaleEvents fse WITH (HOLDLOCK)
+        FROM FlashSaleItems fsi WITH (UPDLOCK, ROWLOCK)
+        INNER JOIN FlashSaleEvents fse
             ON fse.EventID = fsi.EventID
         WHERE fsi.VariantID = @VariantID
           AND fsi.EventID   = @EventID;
@@ -97,19 +104,7 @@ BEGIN
         -- ════════════════════════════════════════════════════════════════════════
         -- BƯỚC 2: Kiểm tra SaleLimit — mỗi user chỉ được mua 1 lần
         -- ════════════════════════════════════════════════════════════════════════
-        SELECT @UserBoughtCount = COUNT(*)
-        FROM Orders o
-        INNER JOIN OrderDetails od ON od.OrderID = o.OrderID
-        WHERE o.CustomerID = @CustomerID
-          AND od.VariantID = @VariantID
-          AND o.Status IN (0, 1);  -- Pending hoặc đã thành công
-
-        IF @UserBoughtCount >= @SaleLimit
-        BEGIN
-            SET @ResultCode = -5;
-            SET @ResultMsg  = N'Ban da tham gia mua san pham nay trong chuong trinh nay roi.';
-            ROLLBACK TRANSACTION; RETURN;
-        END;
+        
 
         -- ════════════════════════════════════════════════════════════════════════
         -- BƯỚC 3: KHÓA ROW INVENTORY — Chống oversell tồn kho vật lý
@@ -117,7 +112,7 @@ BEGIN
         SELECT
             @StockQty    = i.StockQuantity,
             @ReservedQty = i.ReservedQuantity
-        FROM Inventory i WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+        FROM Inventory i WITH (UPDLOCK, ROWLOCK)
         WHERE i.VariantID = @VariantID;
 
         -- Tồn kho khả dụng = Tổng kho - Đã giữ chỗ
@@ -196,7 +191,7 @@ BEGIN
                         + N' (dong '         + CAST(ERROR_LINE()   AS NVARCHAR(10)) + N')';
     END CATCH;
 
-    SET TRANSACTION ISOLATION LEVEL READ COMMITTED; -- Trả về default
+    
 END;
 GO
 

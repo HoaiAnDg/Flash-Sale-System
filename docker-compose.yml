@@ -2,12 +2,26 @@ version: '3.8'
 services:
   mongo1:
     image: mongo:6.0
-    container_name: flashsale-mongo
+    container_name: flashsale_mongo
     command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
     ports:
-      - 27017:27017
+      - "27017:27017"
     volumes:
       - mongo_data:/data/db
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: flashsale_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: flashsale_rabbitmq
+    ports:
+      - "5672:5672"   # Port gọi API
+      - "15672:15672" # Port giao diện quản lý UI
 
 volumes:
   mongo_data:
