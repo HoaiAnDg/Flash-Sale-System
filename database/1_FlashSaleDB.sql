@@ -1,4 +1,19 @@
-﻿-- Tạo database mới
+﻿USE master;
+GO
+
+-- =========================================
+-- 0. XÓA DATABASE CŨ (NẾU CÓ) ĐỂ TẠO MỚI CLEAN 100%
+-- =========================================
+IF EXISTS (SELECT name FROM sys.databases WHERE name = N'FlashSaleDB')
+BEGIN
+    PRINT N'Dang xoa FlashSaleDB cu...';
+    -- Ép đóng tất cả các kết nối đang mở để tránh lỗi "Database is in use"
+    ALTER DATABASE FlashSaleDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE FlashSaleDB;
+END
+GO
+
+-- Tạo database mới
 CREATE DATABASE FlashSaleDB;
 GO
 USE FlashSaleDB;
