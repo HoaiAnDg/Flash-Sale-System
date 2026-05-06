@@ -152,7 +152,7 @@ namespace FlashSaleMarketplace.Api.Controllers
                 await connection.OpenAsync();
 
                 var results = new List<string>();
-                var itemsToKeep = new List<CartItem>(); // [MỚI] Danh sách các món phải giữ lại trong giỏ
+                var itemsToKeep = new List<CartItem>(); // Danh sách các món phải giữ lại trong giỏ
 
                 foreach (var item in cart.Items)
                 {
@@ -161,7 +161,7 @@ namespace FlashSaleMarketplace.Api.Controllers
                         var fsInfo = await connection.QueryFirstOrDefaultAsync<FlashSaleInfo>(@"
                             SELECT fsi.EventID, fse.EndTime 
                             FROM FlashSaleItems fsi 
-                            INNER JOIN FlashSaleEvents fse ON fsi.EventID = fse.EventID 
+                            INNER JOIN FlashSaleEvents fse ON fse.EventID = fse.EventID 
                             WHERE fsi.VariantID = @vid", new { vid = item.VariantId });
 
                         bool isFlashSaleActive = fsInfo != null && fsInfo.EndTime >= DateTime.Now;
@@ -183,18 +183,22 @@ namespace FlashSaleMarketplace.Api.Controllers
                             
                             var luaResult = (int)await _redisDb.ScriptEvaluateAsync(luaScript, new RedisKey[] { stockKey, userKey });
                             
-                            if (luaResult == -1) {
-                                results.Add($"⚡ {item.ProductName}: Thất bại (Bạn đã mua suất Sale này rồi)");
-                                itemsToKeep.Add(item); // Giữ lại trong giỏ
-                            } else if (luaResult == -2) {
-                                // Tự động lùi giá và GIỮ LẠI giỏ hàng
+                            // [FIX Ở ĐÂY]: Gộp chung lỗi -1 (Đã mua) và -2 (Hết suất)
+                            if (luaResult == -1 || luaResult == -2) 
+                            {
+                                // Lập tức tước quyền Flash Sale, lấy lại giá gốc
                                 var originalPrice = await connection.QueryFirstOrDefaultAsync<decimal>(
                                     "SELECT Price FROM ProductVariants WHERE VariantID = @vid", new { vid = item.VariantId });
+                                
                                 item.Price = originalPrice;
-                                item.IsFlashSale = false;
-                                itemsToKeep.Add(item); 
-                                results.Add($"⚠️ {item.ProductName}: Đã hết suất Flash Sale! Tự động lùi về giá gốc.");
-                            } else {
+                                item.IsFlashSale = false; // Biến thành hàng thường
+                                itemsToKeep.Add(item);    // Giữ lại trong giỏ hàng để user quyết định
+                                
+                                string reason = luaResult == -1 ? "Bạn đã hết lượt mua Flash Sale" : "Đã hết suất Flash Sale";
+                                results.Add($"⚠️ {item.ProductName}: {reason}! Đã tự động chuyển về hàng thường (Giá gốc).");
+                            } 
+                            else 
+                            {
                                 var flashSaleOrderId = Guid.NewGuid();
                                 _producer.PublishMessage("order_queue", new { OrderId = flashSaleOrderId, UserId = request.UserId, VariantId = item.VariantId, EventId = eventId });
                                 results.Add($"⚡ {item.ProductName}: Thành công. Mã đơn: {flashSaleOrderId}");
@@ -248,16 +252,14 @@ namespace FlashSaleMarketplace.Api.Controllers
                     }
                 }
 
-                // [MỚI] Khúc cua quyết định: Giữ giỏ hay Xóa giỏ?
+                // Cập nhật lại giỏ hàng MongoDB với các trạng thái IsFlashSale = false mới nhất
                 if (itemsToKeep.Any())
                 {
-                    // Nếu có món cần giữ -> Cập nhật lại mảng Items và giữ giỏ hàng Active
                     var update = Builders<Cart>.Update.Set(c => c.Items, itemsToKeep);
                     await _cartCollection.UpdateOneAsync(c => c.Id == cart.Id, update);
                 }
                 else
                 {
-                    // Nếu không còn món nào (tất cả đều mua thành công) -> Mới cho Completed
                     var update = Builders<Cart>.Update.Set(c => c.Status, "completed");
                     await _cartCollection.UpdateOneAsync(c => c.Id == cart.Id, update);
                 }
