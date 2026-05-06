@@ -17,6 +17,9 @@ namespace FlashSaleMarketplace.Api.Models
 
         [BsonElement("items")]
         public List<CartItem> Items { get; set; } = new List<CartItem>();
+
+        [BsonElement("lastModified")]
+        public DateTime LastModified { get; set; } = DateTime.UtcNow;
     }
 
     public class CartItem
