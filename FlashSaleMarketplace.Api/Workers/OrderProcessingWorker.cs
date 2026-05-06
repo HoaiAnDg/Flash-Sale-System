@@ -30,11 +30,12 @@ namespace FlashSaleMarketplace.Api.Workers
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
+            // 1. TĂNG PREFETCH: Cho phép Worker lấy một lúc 200 tin nhắn từ Queue
+            _channel.BasicQos(prefetchSize: 0, prefetchCount: 200, global: false);
             
             var consumer = new EventingBasicConsumer(_channel);
             
-            consumer.Received += async (model, ea) =>
+            consumer.Received += (model, ea) =>
             {
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
@@ -42,14 +43,17 @@ namespace FlashSaleMarketplace.Api.Workers
 
                 if (orderData != null)
                 {
-                    await ProcessOrderInSqlAndMongo(orderData);
+                    // 2. CHẠY ĐA LUỒNG: Không chờ SQL insert xong mới nhận đơn tiếp theo
+                    _ = Task.Run(async () => 
+                    {
+                        await ProcessOrderInSqlAndMongo(orderData);
+                        // 3. Báo cáo hoàn thành rải rác
+                        _channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
+                    });
                 }
-
-                _channel.BasicAck(deliveryTag: ea.DeliveryTag, multiple: false);
             };
 
             _channel.BasicConsume(queue: "order_queue", autoAck: false, consumer: consumer);
-
             return Task.CompletedTask;
         }
 
@@ -60,35 +64,68 @@ namespace FlashSaleMarketplace.Api.Workers
             parameters.Add("@CustomerID", orderData.UserId);
             parameters.Add("@VariantID", orderData.VariantId);
             parameters.Add("@EventID", orderData.EventId);
-            parameters.Add("@OrderID", dbType: DbType.Guid, direction: ParameterDirection.Output);
+            
+            // [FIX]: Truyền cứng OrderID do API cấp, KHÔNG dùng kiểu Output nữa
+            parameters.Add("@OrderID", orderData.OrderId); 
+            
             parameters.Add("@ResultCode", dbType: DbType.Int32, direction: ParameterDirection.Output);
             parameters.Add("@ResultMsg", dbType: DbType.String, size: 500, direction: ParameterDirection.Output);
 
             try {
-                // 1. CHỐT ĐƠN VÀO SQL
+                // CHỐT ĐƠN VÀO SQL
                 await connection.ExecuteAsync("sp_CheckoutFlashSale", parameters, commandType: CommandType.StoredProcedure);
-                
-                // Delay nhỏ giúp Dashboard tăng số mượt mà như Shopee thật
-                await Task.Delay(20); 
                 
                 int resultCode = parameters.Get<int>("@ResultCode");
                 string resultMsg = parameters.Get<string>("@ResultMsg");
+
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.WriteLine($"[WORKER SQL] Chốt đơn {orderData.OrderId} | Kết quả: {resultCode} | Thông báo: {resultMsg}");
+                Console.ResetColor();
                 
                 if(resultCode == 0) {
-                    // 2. DATA SYNC: NẾU SQL THÀNH CÔNG -> GỌI MONGO XÓA GIỎ HÀNG
+                    // ==============================================================
+                    // TÍNH NĂNG HOÀN HẢO: DATA SYNC VỚI RETRY PATTERN
+                    // ==============================================================
                     using var scope = _serviceProvider.CreateScope();
                     var mongoDb = scope.ServiceProvider.GetRequiredService<IMongoDatabase>();
                     var cartCollection = mongoDb.GetCollection<Cart>("Carts");
 
-                    // Chọc vào Mongo, rút cái Item đã mua ra khỏi mảng Items
                     var filter = Builders<Cart>.Filter.Eq(c => c.UserId, orderData.UserId);
                     var update = Builders<Cart>.Update.PullFilter(c => c.Items, i => i.VariantId == orderData.VariantId);
-                    await cartCollection.UpdateOneAsync(filter, update);
 
-                    // In log Xanh Lơ ra màn hình Console để ngắm
-                    Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine($"[DATA SYNC] Đã xóa Variant {orderData.VariantId} khỏi Giỏ hàng Mongo của User {orderData.UserId}");
-                    Console.ResetColor();
+                    int maxRetries = 3;
+                    bool syncSuccess = false;
+
+                    for (int retry = 1; retry <= maxRetries; retry++)
+                    {
+                        try
+                        {
+                            await cartCollection.UpdateOneAsync(filter, update);
+                            syncSuccess = true;
+                            
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"[DATA SYNC] Đã xóa Variant {orderData.VariantId} khỏi Mongo của User {orderData.UserId}");
+                            Console.ResetColor();
+                            break; // Thành công thì thoát vòng lặp ngay
+                        }
+                        catch (Exception mongoEx)
+                        {
+                            Console.ForegroundColor = ConsoleColor.DarkYellow;
+                            Console.WriteLine($"[CẢNH BÁO] Đồng bộ Mongo thất bại lần {retry}. Thử lại sau 50ms... Lỗi: {mongoEx.Message}");
+                            Console.ResetColor();
+                            int retryDelay = (int)Math.Pow(2, retry) * 50; 
+                            await Task.Delay(retryDelay);
+                        }
+                    }
+
+                    // Cơ chế Fallback (Báo cáo Admin) nếu thử 3 lần vẫn thất bại
+                    if (!syncSuccess)
+                    {
+                        Console.ForegroundColor = ConsoleColor.DarkRed;
+                        Console.WriteLine($"[CẢNH BÁO NGHIÊM TRỌNG] User {orderData.UserId} đã chốt đơn nhưng KHÔNG THỂ xóa giỏ hàng Mongo!");
+                        Console.ResetColor();
+                        // Ở hệ thống thực tế, ta sẽ Insert lỗi này vào 1 bảng SQL tên là "Sync_Errors" để Admin xử lý tay sau.
+                    }
                 } else {
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"[SQL TỪ CHỐI]: {resultMsg}");
@@ -104,6 +141,7 @@ namespace FlashSaleMarketplace.Api.Workers
 
     public class OrderMessage
     {
+        public Guid OrderId { get; set; } 
         public int UserId { get; set; }
         public int VariantId { get; set; }
         public int EventId { get; set; }

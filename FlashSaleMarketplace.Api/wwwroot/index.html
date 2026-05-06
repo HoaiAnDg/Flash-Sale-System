@@ -2,127 +2,686 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <title>Flash Sale UI - Test End-to-End</title>
+    <title>Flash Sale - Siêu Sale Chớp Nhoáng</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        input[type="checkbox"] { accent-color: #10b981; }
+    </style>
 </head>
-<body class="bg-gray-100 p-8">
+<body class="bg-slate-50 p-8 font-sans min-h-screen">
     <div id="root"></div>
 
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        function App() {
+        function CustomerStore() {
+            const [currentUser, setCurrentUser] = useState(null);
+            const [loginId, setLoginId] = useState("");
             const [products, setProducts] = useState([]);
+            const [categories, setCategories] = useState(["Tất cả"]);
+            const [activeCategory, setActiveCategory] = useState("Tất cả");
             const [cart, setCart] = useState([]);
+            const [view, setView] = useState("shop"); // Để chuyển đổi giữa 'shop' và 'orders'
+            const [orders, setOrders] = useState([]); // Lưu danh sách đơn hàng từ SQL
+            const [showQR, setShowQR] = useState(null); // Lưu thông tin đơn hàng vừa chốt để hiện mã QR
+            const [currentTime, setCurrentTime] = useState(new Date());
+            const [errorMessage, setErrorMessage] = useState("");
 
-            // 1. Tự động gọi API lấy danh mục
-            useEffect(() => {
-                fetch('/api/catalog/flash-sale-items')
-                    .then(res => res.json())
-                    .then(response => {
-                        if(response.success) {
-                            setProducts(response.data);
-                        }
-                    });
-            }, []);
-
-            // 2. Gọi API thêm vào giỏ hàng
-            const addToCart = (product) => {
-                fetch('/api/cart/add', {
+            const handleLogin = () => {
+                if(!loginId) return alert("Vui lòng nhập UserID!");
+                fetch('/api/user/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        userId: 1,
+                    body: JSON.stringify({ UserId: parseInt(loginId) })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if(data.success) {
+                        setCurrentUser(data.data);
+                        setErrorMessage("");
+                        loadMongoCart(data.data.UserID || data.data.userId); 
+                    }
+                    else alert(data.message);
+                })
+                .catch(err => alert("Lỗi kết nối máy chủ!"));
+            };
+
+            const loadMongoCart = (userId) => {
+                fetch(`/api/cart/${userId}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if(data.success && data.data) {
+                            const normalizedCart = data.data.map(item => ({
+                                ...item,
+                                price: item.price || item.Price || 0,
+                                isFlashSale: item.isFlashSale || item.IsFlashSale || false,
+                                quantity: item.quantity || item.Quantity || 1,
+                                selected: item.selected !== false
+                            }));
+                            setCart(normalizedCart);
+                        }
+                    })
+                    .catch(err => console.log("Lỗi tải giỏ hàng:", err));
+            };
+
+            const toggleSelection = (idx) => {
+                const newCart = [...cart];
+                newCart[idx].selected = newCart[idx].selected === false ? true : false;
+                syncCartToMongo(newCart); // Sync ngay lập tức khi tick
+            };
+
+            // [TÍNH NĂNG MỚI] XÓA SẢN PHẨM KHỎI GIỎ HÀNG
+            const removeFromCart = (idx) => {
+                // Lọc bỏ phần tử tại vị trí idx
+                const newCart = cart.filter((_, i) => i !== idx);
+                syncCartToMongo(newCart); 
+            };
+
+            const syncCartToMongo = (newCartItems) => {
+                setCart(newCartItems); 
+                fetch('/api/cart/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ UserId: currentUser.UserID || currentUser.userId, Items: newCartItems })
+                }).catch(err => console.log("Lỗi lưu giỏ hàng nền:", err));
+            };
+
+            useEffect(() => {
+                if (!currentUser) return;
+                const fetchProducts = () => {
+                    fetch('/api/catalog/flash-sale-items')
+                        .then(res => res.json())
+                        .then(data => { 
+                            if(data.success) {
+                                setProducts(data.data);
+                                setErrorMessage(""); 
+                                const cats = ["Tất cả", ...new Set(data.data.map(p => p.categoryName || p.CategoryName).filter(Boolean))];
+                                setCategories(cats);
+                            } else setErrorMessage(data.message); 
+                        })
+                        .catch(err => setErrorMessage("Mất kết nối đến Server C#!"));
+                };
+
+                fetchProducts();
+                const syncInterval = setInterval(fetchProducts, 5000); 
+                const timerInterval = setInterval(() => setCurrentTime(new Date()), 1000);
+                
+                return () => { clearInterval(syncInterval); clearInterval(timerInterval); };
+            }, [currentUser]);
+
+            const formatMoney = (amount) => {
+                if(amount === undefined || amount === null || isNaN(amount)) return "0 đ";
+                return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+            };
+
+            const addToCart = (p, isFlashSale) => {
+                const appliedPrice = isFlashSale ? p.flashSalePrice : p.originalPrice;
+                let newCart = [...cart];
+                const existingIndex = newCart.findIndex(item => 
+                    (item.variantId || item.VariantId) === p.variantId && item.isFlashSale === isFlashSale
+                );
+                
+                if (existingIndex >= 0) {
+                    newCart[existingIndex].quantity += 1;
+                    newCart[existingIndex].selected = true; 
+                } else {
+                    newCart.push({ 
+                        ...p, 
+                        price: appliedPrice, 
+                        isFlashSale: isFlashSale, 
                         quantity: 1,
-                        variantId: product.variantId, 
-                        productName: product.productName, 
-                        variantName: product.variantName,
-                        flashSalePrice: product.flashSalePrice 
+                        selected: true 
+                    });
+                }
+                syncCartToMongo(newCart);
+            };
+            
+            const fetchOrders = () => {
+                fetch(`/api/checkout/history/${currentUser.UserID || currentUser.userId}`)
+                    .then(res => res.json())
+                    .then(data => setOrders(data.data));
+            };
+
+            const cancelOrder = (orderId) => {
+                if (!window.confirm("Bạn có chắc chắn muốn hủy đơn hàng này?")) return;
+                
+                fetch('/api/checkout/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        orderId: orderId, 
+                        userId: currentUser.UserID || currentUser.userId 
                     })
                 })
                 .then(res => res.json())
-                .then(response => {
-                    if(response.success) {
-                        setCart([...cart, response.data]);
-                        console.log(response.message);
+                .then(data => {
+                    if(data.success !== false) {
+                        alert("Đơn hàng đã được hủy thành công!");
+                        fetchOrders();
+                    } else {
+                        alert("Lỗi: " + data.message);
                     }
-                });
+                })
+                .catch(err => alert("Lỗi hủy đơn hàng: " + err.message));
             };
 
-            // 3. Hàm Chốt đơn (Saga Checkout)
-            const checkout = () => {
-                fetch('/api/checkout/process', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId: 1 }) // ID 1 là User giả lập đang đăng nhập
-                })
-                .then(res => res.json())
-                .then(response => {
-                    if(response.success) {
-                        // In kết quả từ SQL Server trả về (Thành công/Hết kho/Hết suất)
-                        alert("KẾT QUẢ CHỐT ĐƠN:\n\n" + response.data.join("\n"));
-                        // Làm rỗng giỏ hàng trên UI
-                        setCart([]);
-                    } else {
-                        alert("Lỗi: " + response.message);
+            const handleReorder = async (orderId) => {
+                try {
+                    const res = await fetch(`/api/checkout/details/${orderId}`);
+                    const payload = await res.json();
+
+                    // OkResponse may return { Success, Data } or some endpoints return { success, data }
+                    const details = payload?.data ?? payload?.Data ?? payload;
+
+                    if (!details || !Array.isArray(details) || details.length === 0) {
+                        alert("Không thể lấy chi tiết đơn hàng để đặt lại.");
+                        return;
                     }
-                });
+
+                    const reorderItems = details.map(item => ({
+                        variantId: item.variantId ?? item.VariantID,
+                        productName: item.productName ?? item.ProductName ?? '',
+                        variantName: item.variantName ?? item.VariantName ?? '',
+                        price: item.originalPrice ?? item.OriginalPrice ?? item.price ?? 0,
+                        isFlashSale: false,
+                        quantity: item.quantity ?? item.Quantity ?? 1,
+                        selected: true
+                    }));
+
+                    // Merge into current cart (consolidate same variantId and non-flash items)
+                    const newCart = cart.map(c => ({ ...c }));
+                    reorderItems.forEach(r => {
+                        const rVid = r.variantId;
+                        const idx = newCart.findIndex(c => (c.variantId ?? c.VariantId) === rVid && !(c.isFlashSale || c.IsFlashSale));
+                        if (idx >= 0) {
+                            newCart[idx].quantity = (newCart[idx].quantity || newCart[idx].Quantity || 0) + r.quantity;
+                            newCart[idx].selected = true;
+                        } else {
+                            newCart.push(r);
+                        }
+                    });
+
+                    // Sync and navigate back to shop
+                    syncCartToMongo(newCart);
+                    setView("shop");
+                    alert("✅ Đã thêm các sản phẩm vào giỏ hàng để mua lại!");
+                } catch (err) {
+                    alert("Lỗi khi đặt lại đơn: " + (err?.message || err));
+                }
             };
+
+            const checkoutCart = async () => {
+                const selectedItems = cart.filter(item => item.selected !== false);
+                const unselectedItems = cart.filter(item => item.selected === false);
+
+                if(selectedItems.length === 0) return alert("Bạn chưa chọn sản phẩm nào để thanh toán!");
+
+                try {
+                    const uId = currentUser.UserID || currentUser.userId;
+
+                    // Tính tổng tiền CHỈ cho những món được tick để hiện lên QR
+                    const selectedTotal = selectedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+                    // BƯỚC 1: Đồng bộ CHỈ hàng ĐÃ CHỌN xuống DB (để Backend chốt đơn)
+                    await fetch('/api/cart/sync', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ UserId: uId, Items: selectedItems })
+                    });
+
+                    // BƯỚC 2: Gọi API xử lý chốt đơn
+                    const res = await fetch('/api/checkout/process', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: uId })
+                    });
+                    const response = await res.json();
+
+                    if(response.success && response.data) {
+                        fetchOrders(); 
+                        
+                        // [DEBUG]: Xem backend trả về những gì
+                        console.log("Dữ liệu từ Backend:", response.data);
+
+                        let foundOrderIds = [];
+                        response.data.forEach(msg => {
+                            // Regex cải tiến để bắt chính xác GUID
+                            const match = msg.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+                            if(match) foundOrderIds.push(match[0]);
+                        });
+
+                        console.log("Danh sách OrderID đã bắt được:", foundOrderIds);
+
+                        if(foundOrderIds.length > 0) {
+                            // [FIX]: Thêm một biến id (số ít) lấy phần tử đầu tiên để hiện QR cho đẹp
+                            setShowQR({ 
+                                ids: foundOrderIds, 
+                                id: foundOrderIds[0], 
+                                amount: selectedTotal 
+                            });
+                        } else {
+                            alert("⚠️ Thông báo hệ thống:\n\n" + response.data.join("\n"));
+                        }
+                    } else {
+                        alert("Lỗi chốt đơn: " + response.message);
+                    }
+
+                    // BƯỚC 3: PHỤC HỒI & GỘP GIỎ HÀNG
+                    // Kéo giỏ hàng mới nhất từ DB về (lúc này DB chỉ chứa các món mua lỗi hoặc lùi giá do Backend trả lại)
+                    const dbCartRes = await fetch(`/api/cart/${uId}`);
+                    const dbCartData = await dbCartRes.json();
+                    
+                    let leftoverItems = [];
+                    if(dbCartData.success && dbCartData.data) {
+                        leftoverItems = dbCartData.data.map(item => ({
+                            ...item,
+                            price: item.price || item.Price || 0,
+                            isFlashSale: item.isFlashSale || item.IsFlashSale || false,
+                            quantity: item.quantity || item.Quantity || 1,
+                            selected: item.selected !== false
+                        }));
+                    }
+
+                    // Gộp các món Backend vừa cập nhật (leftoverItems) với các món khách không chọn lúc nãy (unselectedItems)
+                    const finalMergedCart = [...leftoverItems, ...unselectedItems];
+                    
+                    // Đồng bộ lại Giỏ hàng hoàn chỉnh lên DB và cập nhật Giao diện
+                    syncCartToMongo(finalMergedCart);
+
+                } catch(err) {
+                    alert("Lỗi kết nối khi gọi API Saga Checkout!");
+                }
+            };
+
+            const fakeConfirmScan = async (orderIds) => {
+                if(!orderIds || orderIds.length === 0) return;
+                
+                console.log("🚀 Bắt đầu xác nhận thanh toán cho:", orderIds);
+                try {
+                    const promises = orderIds.map(async (id) => {
+                        const res = await fetch('/api/checkout/confirm-payment', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ orderId: id, method: "VNPay" })
+                        });
+                        return await res.json();
+                    });
+
+                    const results = await Promise.all(promises);
+                    console.log("Kết quả xác nhận từ Server:", results);
+
+                    // Kiểm tra xem tất cả có thành công (hoặc đã thành công trước đó) không
+                    const allOk = results.every(r => r.success === true || (r.message && r.message.includes("1")));
+
+                    if (allOk) {
+                        setShowQR(null);
+                        alert("✅ Tất cả đơn hàng đã được xác nhận thành công!");
+                        fetchOrders();
+                    } else {
+                        const errorMsgs = results.filter(r => !r.success).map(r => r.message).join("\n");
+                        alert("⚠️ Lưu ý:\n" + errorMsgs);
+                        fetchOrders();
+                    }
+                } catch (err) {
+                    console.error("Lỗi kết nối:", err);
+                    alert("❌ Mất kết nối đến server xác nhận!");
+                }
+            };
+
+            if (!currentUser) {
+                return (
+                    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+                        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border border-gray-100 text-center">
+                            <div className="text-6xl mb-6">🛒</div>
+                            <h2 className="text-3xl font-extrabold text-slate-800 mb-3">Đăng Nhập</h2>
+                            <p className="text-gray-500 mb-8 text-sm">Hệ thống đang có sẵn 50.000 User. Hãy nhập một UserID bất kỳ (từ 1 đến 50000).</p>
+                            <div className="text-left mb-6">
+                                <label className="block text-sm font-bold text-slate-700 mb-2">Mã Khách Hàng (UserID)</label>
+                                <input type="number" value={loginId} onChange={(e) => setLoginId(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} className="w-full px-5 py-4 rounded-xl border border-gray-300 focus:ring-4 focus:ring-red-100 focus:border-red-500 outline-none transition-all text-lg font-mono" />
+                            </div>
+                            <button onClick={handleLogin} className="w-full bg-red-600 text-white font-bold text-lg py-4 rounded-xl hover:bg-red-700 active:scale-95 shadow-lg">Vào Siêu Thị ⚡</button>
+                        </div>
+                    </div>
+                )
+            }
+
+            const cartTotal = cart.reduce((sum, item) => {
+                if (item.selected === false) return sum;
+                const pPrice = item.price || item.Price || item.currentPrice || 0;
+                const pQty = item.quantity || item.Quantity || 1;
+                return sum + (pPrice * pQty);
+            }, 0);
+            
+            const displayProducts = activeCategory === "Tất cả" 
+                ? products 
+                : products.filter(p => (p.categoryName || p.CategoryName) === activeCategory);
 
             return (
-                <div className="max-w-6xl mx-auto grid grid-cols-3 gap-8">
-                    {/* Danh mục */}
-                    <div className="col-span-2 bg-white p-6 rounded-lg shadow-md">
-                        <h2 className="text-2xl font-bold mb-4">🛒 Danh mục Sản phẩm (SQL Server)</h2>
-                        <div className="grid grid-cols-2 gap-4">
-                            {products.map(p => (
-                                <div key={p.variantId} className="border p-4 rounded flex justify-between items-center hover:shadow-lg transition">
-                                    <div>
-                                        <h3 className="font-bold text-lg">{p.productName}</h3>
-                                        <p className="text-gray-500 text-sm mb-2">Phân loại: {p.variantName}</p>
-                                        <p className="text-red-600 font-bold text-xl">
-                                            {p.flashSalePrice.toLocaleString('vi-VN')} đ
-                                        </p>
-                                    </div>
-                                    <button onClick={() => addToCart(p)} 
-                                            className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 font-bold">
-                                        Thêm
-                                    </button>
-                                </div>
-                            ))}
+                <div className="max-w-7xl mx-auto">
+                    <div className="flex justify-between items-center mb-6 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                        <div>
+                            <h1 className="text-3xl font-extrabold text-red-600 flex items-center gap-3">
+                                <span className="text-4xl">⚡</span> SIÊU THỊ TRỰC TUYẾN
+                            </h1>
+                            <p className="mt-2 text-slate-600 font-medium">
+                                👤 Xin chào khách hàng: <span className="font-bold text-blue-600">{currentUser.FullName}</span> 
+                                <button onClick={() => {setCurrentUser(null); setCart([]);}} className="ml-4 text-xs font-bold text-red-500 hover:text-red-700 bg-red-50 px-2 py-1 rounded-md">Đăng xuất</button>
+                            </p>
+                        </div>
+                        <div className="text-right">
+                            <p className="text-sm text-gray-500 font-semibold">Giờ hệ thống</p>
+                            <p className="text-xl font-mono font-bold text-slate-800">{currentTime.toLocaleTimeString('vi-VN')}</p>
                         </div>
                     </div>
 
-                    {/* Giỏ hàng */}
-                    <div className="bg-white p-6 rounded-lg shadow-md h-fit">
-                        <h2 className="text-2xl font-bold mb-4">⚡ Giỏ hàng (MongoDB)</h2>
-                        {cart.length === 0 ? (
-                            <p className="text-gray-500 italic">Giỏ hàng đang trống.</p>
+                    <div className="mb-6 flex gap-3 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                        <button 
+                            onClick={() => setView("shop")}
+                            className={`px-6 py-3 rounded-xl font-bold transition-all ${
+                                view === "shop" 
+                                    ? 'bg-slate-800 text-white shadow-md' 
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
+                            }`}
+                        >
+                            🏪 Cửa hàng
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setView("orders");
+                                fetchOrders();
+                            }}
+                            className={`px-6 py-3 rounded-xl font-bold transition-all ${
+                                view === "orders" 
+                                    ? 'bg-slate-800 text-white shadow-md' 
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-300'
+                            }`}
+                        >
+                            📋 Đơn hàng của tôi
+                        </button>
+                    </div>
+
+                    {view === "shop" && (
+                    <React.Fragment>
+                    <div className="mb-8 flex gap-3 overflow-x-auto no-scrollbar py-2">
+                        {categories.map((cat, idx) => (
+                            <button key={idx} onClick={() => setActiveCategory(cat)}
+                                className={`whitespace-nowrap px-6 py-3 rounded-full font-bold text-sm transition-all shadow-sm
+                                    ${activeCategory === cat ? 'bg-slate-800 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}>
+                                {cat}
+                            </button>
+                        ))}
+                    </div>
+                    
+                    {errorMessage && (
+                        <div className="bg-red-100 border-l-4 border-red-600 text-red-800 p-4 rounded mb-8 shadow-sm">
+                            <p className="font-mono text-sm break-words">{errorMessage}</p>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                            {displayProducts.map((p, idx) => {
+                                const hasFlashSale = p.startTime && p.endTime;
+                                const start = hasFlashSale ? new Date(p.startTime) : null;
+                                const end = hasFlashSale ? new Date(p.endTime) : null;
+                                const now = currentTime;
+                                
+                                const sold = Number(p.soldQuantity || 0);
+                                const total = Number(p.totalAllocated || 1);
+                                const percent = (sold / total) * 100;
+                                const isSoldOut = hasFlashSale && sold >= total;
+                                
+                                const isFlashSaleTime = hasFlashSale && (now >= start && now <= end);
+                                const canBuyFlashSale = isFlashSaleTime && !isSoldOut;
+
+                                let statusUI = null;
+                                let buttonUI = null;
+
+                                if (!hasFlashSale) {
+                                    statusUI = <div className="bg-blue-50 text-blue-600 p-2 rounded-xl text-center font-bold border border-blue-100"><p className="text-xs uppercase mb-1">Loại Hàng</p><div className="text-xl">Bình Thường</div></div>;
+                                    buttonUI = <button onClick={() => addToCart(p, false)} className="w-full py-3 rounded-xl font-bold text-white uppercase bg-slate-800 hover:bg-slate-700 active:scale-95">🛒 Thêm Giỏ Hàng</button>;
+                                } 
+                                else if (now < start) {
+                                    const diff = Math.floor((start - now) / 1000);
+                                    const h = Math.floor(diff / 3600);
+                                    const m = Math.floor((diff % 3600) / 60);
+                                    const s = diff % 60;
+                                    statusUI = <div className="bg-amber-100 text-amber-700 p-2 rounded-xl text-center font-bold border border-amber-200"><p className="text-xs uppercase mb-1">Sắp bùng nổ sau</p><div className="text-xl">{h > 0 ? `${h}h ` : ''}{m}p {s}s</div></div>;
+                                    buttonUI = <button onClick={() => addToCart(p, false)} className="w-full py-3 rounded-xl font-bold text-white uppercase bg-slate-800 hover:bg-slate-700 active:scale-95">🛒 Thêm Giỏ Hàng</button>;
+                                } 
+                                else if (isFlashSaleTime) {
+                                    if (isSoldOut) {
+                                        statusUI = <div className="bg-gray-800 text-white p-2 rounded-xl text-center font-bold"><div className="text-xl">⚠️ HẾT SUẤT SALE</div></div>;
+                                        buttonUI = <button onClick={() => addToCart(p, false)} className="w-full py-3 rounded-xl font-bold text-white uppercase bg-slate-800 hover:bg-slate-700 active:scale-95">🛒 Mua Giá Gốc</button>;
+                                    } else {
+                                        const diff = Math.floor((end - now) / 1000);
+                                        const m = Math.floor(diff / 60);
+                                        const s = diff % 60;
+                                        statusUI = <div className="bg-red-600 text-white p-2 rounded-xl text-center font-bold animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.5)]"><p className="text-xs uppercase mb-1 opacity-90">Kết thúc sau</p><div className="text-xl">0{m}:{s < 10 ? '0'+s : s}</div></div>;
+                                        buttonUI = <button onClick={() => addToCart(p, true)} className="w-full py-3 rounded-xl font-bold text-white uppercase transition-all duration-200 bg-gradient-to-r from-red-600 to-rose-500 shadow-[0_5px_20px_rgba(220,38,38,0.4)] active:scale-95">🛒 Thêm Giỏ Sale</button>;
+                                    }
+                                } else {
+                                    statusUI = <div className="bg-gray-200 text-gray-500 p-2 rounded-xl text-center font-bold border border-gray-300"><div className="text-xl"> Flash sale đã kết thúc</div></div>;
+                                    buttonUI = <button onClick={() => addToCart(p, false)} className="w-full py-3 rounded-xl font-bold text-white uppercase bg-slate-800 hover:bg-slate-700 active:scale-95">🛒 Thêm Giỏ Hàng</button>;
+                                }
+
+                                return (
+                                    <div key={idx} className="bg-white p-5 rounded-2xl shadow-lg border border-gray-100 flex flex-col justify-between transition-all transform hover:-translate-y-1">
+                                        <div>
+                                            <h3 className="font-bold text-lg text-slate-800 line-clamp-2 min-h-[56px] leading-tight mb-2">{p.productName}</h3>
+                                            <div className="flex gap-2">
+                                                <span className="text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded font-bold uppercase tracking-wider border border-blue-100">{p.categoryName || p.CategoryName}</span>
+                                                <span className="text-[10px] text-slate-600 bg-slate-100 px-2 py-1 rounded font-medium border border-slate-200">{p.variantName}</span>
+                                            </div>
+                                            <div className="mt-4 mb-4 min-h-[64px] flex flex-col justify-center">
+                                                {canBuyFlashSale ? (
+                                                    <React.Fragment>
+                                                        <div className="text-gray-400 line-through font-medium text-sm mb-1">{formatMoney(p.originalPrice)}</div>
+                                                        <div className="text-red-600 font-black text-2xl tracking-tight">{formatMoney(p.flashSalePrice)}</div>
+                                                    </React.Fragment>
+                                                ) : (
+                                                    <React.Fragment>
+                                                        <div className="text-transparent font-medium text-sm mb-1 selection:text-transparent">Ẩn</div>
+                                                        <div className="text-slate-800 font-black text-2xl tracking-tight">{formatMoney(p.originalPrice)}</div>
+                                                    </React.Fragment>
+                                                )}
+                                            </div>
+                                            {hasFlashSale && isFlashSaleTime && (
+                                                <div className="mb-5">
+                                                    <div className="flex justify-between text-[11px] font-bold text-gray-500 mb-1"><span>{isSoldOut ? 'Đã bán hết' : 'Đang bán nhanh'}</span><span>{sold} / {total}</span></div>
+                                                    <div className="w-full bg-red-100 rounded-full h-2"><div className="bg-gradient-to-r from-red-500 to-orange-400 h-2 rounded-full" style={{ width: `${percent}%` }}></div></div>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div><div className="mb-3">{statusUI}</div>{buttonUI}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100 h-fit sticky top-8 flex flex-col">
+                            <h2 className="text-2xl font-bold mb-4 text-slate-800 flex items-center gap-2">
+                                🛒 Giỏ Hàng <span className="bg-blue-100 text-blue-700 text-sm px-2 py-1 rounded-full">{cart.reduce((s, i) => s + (i.quantity || i.Quantity || 1), 0)}</span>
+                            </h2>
+                            
+                            {cart.length === 0 ? (
+                                <div className="text-center py-10">
+                                    <p className="text-gray-400 font-medium">Giỏ hàng đang trống.</p>
+                                </div>
+                            ) : (
+                                <React.Fragment>
+                                    <ul className="mb-4 max-h-[400px] overflow-y-auto pr-2 divide-y">
+                                        {cart.map((item, idx) => {
+                                            const itemPrice = item.price || item.Price || item.currentPrice || 0;
+                                            const itemQty = item.quantity || item.Quantity || 1;
+                                            const isSelected = item.selected !== false;
+                                            
+                                            return (
+                                                <li key={idx} className={`py-3 flex items-center gap-3 transition-all ${!isSelected ? 'opacity-50 grayscale' : ''}`}>
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={isSelected} 
+                                                        onChange={() => toggleSelection(idx)}
+                                                        className="w-5 h-5 cursor-pointer rounded"
+                                                    />
+                                                    <div className="flex flex-col flex-1">
+                                                        <span className="font-semibold text-sm line-clamp-1 pr-4">
+                                                            {item.isFlashSale && <span className="text-red-500 mr-1">⚡</span>}
+                                                            {item.productName || item.ProductName}
+                                                        </span>
+                                                        <div className="flex justify-between items-center mt-1">
+                                                            <span className="text-xs text-gray-500">
+                                                                {item.variantName || item.VariantName} 
+                                                                <span className="ml-2 font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">x{itemQty}</span>
+                                                            </span>
+                                                            
+                                                            {/* KHU VỰC HIỂN THỊ GIÁ VÀ NÚT XÓA */}
+                                                            <div className="flex items-center gap-3">
+                                                                <span className={`font-bold text-sm ${item.isFlashSale || item.IsFlashSale ? 'text-red-600' : 'text-slate-800'}`}>
+                                                                    {formatMoney(itemPrice * itemQty)}
+                                                                </span>
+                                                                <button onClick={() => removeFromCart(idx)} className="text-gray-300 hover:text-red-500 transition-colors" title="Xóa khỏi giỏ hàng">
+                                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                                                    </svg>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                    <div className="border-t pt-4 mb-6">
+                                        <div className="flex justify-between items-center">
+                                            <span className="font-bold text-gray-500">Tổng chọn:</span>
+                                            <span className="font-black text-xl text-emerald-600">{formatMoney(cartTotal)}</span>
+                                        </div>
+                                    </div>
+                                    <button onClick={checkoutCart} className="w-full bg-emerald-600 text-white px-4 py-4 rounded-xl hover:bg-emerald-700 font-bold text-lg shadow-lg active:scale-95 transition-all">
+                                        Thanh toán (Saga)
+                                    </button>
+                                </React.Fragment>
+                            )}
+                        </div>
+                    </div>
+                    </React.Fragment>
+                    )}
+
+                    {view === "orders" && (
+                    <React.Fragment>
+                    <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+                        <h2 className="text-2xl font-bold mb-6 text-slate-800 flex items-center gap-2">
+                            📋 Lịch Sử Đơn Hàng
+                        </h2>
+                        
+                        {orders.length === 0 ? (
+                            <div className="text-center py-12">
+                                <p className="text-gray-400 text-lg font-medium">Bạn chưa có đơn hàng nào.</p>
+                            </div>
                         ) : (
-                            <div>
-                                <ul className="mb-4">
-                                    {cart.map((item, idx) => (
-                                        <li key={idx} className="border-b py-3 flex flex-col">
-                                            <span className="font-semibold">{item.productName}</span>
-                                            <span className="text-sm text-gray-500">{item.variantName}</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                                <button onClick={checkout} className="w-full bg-green-600 text-white px-4 py-3 rounded hover:bg-green-700 font-bold text-lg shadow-lg">
-                                    Chốt Đơn (Saga Checkout)
-                                </button>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="bg-slate-50 border-b border-slate-200">
+                                            <th className="text-left px-4 py-3 font-bold text-slate-700">Mã Đơn Hàng</th>
+                                            <th className="text-left px-4 py-3 font-bold text-slate-700">Ngày Đặt</th>
+                                            <th className="text-right px-4 py-3 font-bold text-slate-700">Tổng Tiền</th>
+                                            <th className="text-center px-4 py-3 font-bold text-slate-700">Trạng Thái</th>
+                                            <th className="text-center px-4 py-3 font-bold text-slate-700">Thao Tác</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {orders.map((order, idx) => {
+                                            const orderDate = order.orderDate || order.OrderDate;
+                                            const formattedDate = orderDate ? new Date(orderDate).toLocaleString('vi-VN') : 'N/A';
+                                            const statusText = order.status === 1 || order.Status === 1 ? 'Thành công' : order.status === 0 || order.Status === 0 ? 'Đang chờ' : 'Đã hủy';
+                                            const statusColor = order.status === 1 || order.Status === 1 ? 'bg-emerald-100 text-emerald-700' : order.status === 0 || order.Status === 0 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700';
+                                            
+                                            return (
+                                                <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50 transition-all">
+                                                    <td className="px-4 py-3 font-mono text-slate-800 font-semibold">
+                                                        {(order.orderID || order.OrderID || '').toString().substring(0, 8)}...
+                                                    </td>
+                                                    <td className="px-4 py-3 text-slate-600">{formattedDate}</td>
+                                                    <td className="px-4 py-3 text-right font-bold text-slate-800">
+                                                        {formatMoney(order.totalAmount || order.TotalAmount || 0)}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${statusColor}`}>
+                                                            {statusText}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        {(order.status === 1 || order.Status === 1) && (
+                                                            <button 
+                                                                onClick={() => cancelOrder(order.orderID || order.OrderID)}
+                                                                className="inline-block px-4 py-2 bg-red-500 text-white rounded-lg font-semibold text-xs hover:bg-red-600 active:scale-95 transition-all"
+                                                            >
+                                                                ❌ Hủy đơn
+                                                            </button>
+                                                        )}
+                                                        {(order.status === 2 || order.Status === 2) && (
+                                                            <button 
+                                                                onClick={() => handleReorder(order.orderID || order.OrderID)}
+                                                                className="inline-block px-4 py-2 bg-blue-500 text-white rounded-lg font-semibold text-xs hover:bg-blue-600 active:scale-95 transition-all"
+                                                            >
+                                                                🔄 Đặt lại
+                                                            </button>
+                                                        )}
+                                                        {(order.status === 0 || order.Status === 0) && (
+                                                            <span className="text-gray-400 text-xs">—</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
                             </div>
                         )}
                     </div>
+                    </React.Fragment>
+                    )}
+
+                    {showQR && (
+                        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl">
+                                <h3 className="text-2xl font-bold mb-2 text-slate-800">Quét mã VNPay</h3>
+                                <p className="text-gray-500 mb-6 font-medium">Số tiền: <span className="text-red-600 font-bold">{formatMoney(showQR.amount)}</span></p>
+                                
+                                <div className="bg-slate-100 p-4 rounded-2xl mb-6 flex justify-center border border-slate-200">
+                                    <img 
+                                        src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${showQR.ids[0]}`} // FIX: Dùng mã đầu tiên trong mảng
+                                        alt="QR Code" 
+                                        className="w-48 h-48" 
+                                    />
+                                </div>
+
+                                <button onClick={() => { 
+                                    const idsToConfirm = [...showQR.ids]; // [FIX QUAN TRỌNG]: Sao chép danh sách ID ra biến tạm
+                                    setShowQR(null); // Đóng popup
+                                    
+                                    console.log("⏳ Đang chờ Worker 3s trước khi xác nhận các đơn:", idsToConfirm);
+                                    setTimeout(() => { fakeConfirmScan(idsToConfirm); }, 3000); 
+                                }} className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold mb-3 hover:bg-emerald-700 active:scale-95 transition-all">
+                                    Tôi đã chuyển khoản thành công
+                                </button>
+                                <button onClick={() => setShowQR(null)} className="w-full text-gray-400 font-bold py-2 hover:text-gray-600">Đóng</button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        root.render(<CustomerStore />);
     </script>
 </body>
 </html>

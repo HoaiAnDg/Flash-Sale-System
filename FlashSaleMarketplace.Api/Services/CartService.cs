@@ -25,7 +25,9 @@ namespace FlashSaleMarketplace.Api.Services
                 VariantId = request.VariantId,
                 ProductName = request.ProductName,
                 VariantName = request.VariantName,
-                FlashSalePrice = request.FlashSalePrice,
+                Price = request.Price, // <--- ĐỔI THÀNH PRICE
+                IsFlashSale = false,   // Bổ sung thêm cho đủ thuộc tính mới
+                Selected = true,       // Bổ sung thêm cho đủ thuộc tính mới
                 Quantity = request.Quantity
             };
 

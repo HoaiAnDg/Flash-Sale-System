@@ -18,19 +18,18 @@ IF OBJECT_ID('dbo.sp_CheckoutFlashSale', 'P') IS NOT NULL
     DROP PROCEDURE dbo.sp_CheckoutFlashSale;
 GO
 
-CREATE PROCEDURE dbo.sp_CheckoutFlashSale
+ALTER PROCEDURE dbo.sp_CheckoutFlashSale
     @CustomerID  INT,
     @VariantID   INT,
     @EventID     INT,
-    @OrderID     UNIQUEIDENTIFIER OUTPUT,
+    @OrderID     UNIQUEIDENTIFIER, -- [FIX]: Xóa chữ OUTPUT ở đây
     @ResultCode  INT              OUTPUT,
     @ResultMsg   NVARCHAR(500)    OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Khởi tạo output
-    SET @OrderID    = NEWID();
+    -- [FIX]: Xóa dòng "SET @OrderID = NEWID();" ở đây vì C# đã cấp sẵn rồi
     SET @ResultCode = -99;
     SET @ResultMsg  = N'Loi he thong chua xac dinh.';
 

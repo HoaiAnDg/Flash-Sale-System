@@ -1,5 +1,6 @@
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
+using System.Collections.Generic;
 
 namespace FlashSaleMarketplace.Api.Models
 {
@@ -10,7 +11,7 @@ namespace FlashSaleMarketplace.Api.Models
         public string? Id { get; set; }
 
         [BsonElement("userId")]
-        public int UserId { get; set; } // Khớp với INT của SQL Server
+        public int UserId { get; set; } 
 
         [BsonElement("status")]
         public string Status { get; set; } = "active";
@@ -19,6 +20,7 @@ namespace FlashSaleMarketplace.Api.Models
         public List<CartItem> Items { get; set; } = new List<CartItem>();
     }
 
+    [BsonIgnoreExtraElements]
     public class CartItem
     {
         [BsonElement("variantId")]
@@ -30,10 +32,19 @@ namespace FlashSaleMarketplace.Api.Models
         [BsonElement("variantName")]
         public string VariantName { get; set; } = string.Empty;
 
-        [BsonElement("flashSalePrice")]
-        public decimal FlashSalePrice { get; set; }
+        // [ĐÃ SỬA] Dùng chung biến Price cho cả hàng thường và hàng Sale
+        [BsonElement("price")]
+        public decimal Price { get; set; }
+
+        // [BỔ SUNG] Cờ phân biệt hàng Flash Sale
+        [BsonElement("isFlashSale")]
+        public bool IsFlashSale { get; set; }
 
         [BsonElement("quantity")]
         public int Quantity { get; set; }
+
+        // [BỔ SUNG] Lưu trạng thái tick chọn để F5 không bị mất
+        [BsonElement("selected")]
+        public bool Selected { get; set; } = true;
     }
 }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using RabbitMQ.Client;
@@ -7,17 +8,13 @@ namespace FlashSaleMarketplace.Api.Messaging
     public class RabbitMqProducer : IDisposable
     {
         private readonly IConnection _connection;
-        private readonly IModel _channel;
-        private readonly object _lock = new object(); // ĐÈN GIAO THÔNG
+        // Rổ chứa các kênh (Channel Pool)
+        private readonly ConcurrentBag<IModel> _channelPool = new();
 
         public RabbitMqProducer()
         {
             var factory = new ConnectionFactory { HostName = "localhost" };
             _connection = factory.CreateConnection();
-            
-            // TẠO ĐÚNG 1 KÊNH DUY NHẤT LÚC KHỞI ĐỘNG
-            _channel = _connection.CreateModel();
-            _channel.QueueDeclare(queue: "order_queue", durable: true, exclusive: false, autoDelete: false, arguments: null);
         }
 
         public void PublishMessage(string queueName, object message)
@@ -25,20 +22,26 @@ namespace FlashSaleMarketplace.Api.Messaging
             var json = JsonSerializer.Serialize(message);
             var body = Encoding.UTF8.GetBytes(json);
 
-            var properties = _channel.CreateBasicProperties();
+            // Lấy 1 ống từ trong rổ ra (Nếu rổ trống thì tạo ống mới)
+            if (!_channelPool.TryTake(out var channel))
+            {
+                channel = _connection.CreateModel();
+                channel.QueueDeclare(queue: queueName, durable: true, exclusive: false, autoDelete: false, arguments: null);
+            }
+
+            var properties = channel.CreateBasicProperties();
             properties.Persistent = true;
 
-            // DÙNG LOCK: Tại 1 mili-giây, chỉ 1 request được phép ném tin nhắn vào ống.
-            // Ngăn chặn xung đột đa luồng tuyệt đối mà không cần mở ống mới!
-            lock (_lock)
-            {
-                _channel.BasicPublish(exchange: "", routingKey: queueName, basicProperties: properties, body: body);
-            }
+            // Bắn tin nhắn tốc độ cao (Không bị lock)
+            channel.BasicPublish(exchange: "", routingKey: queueName, basicProperties: properties, body: body);
+
+            // Bắn xong thì quăng ống lại vào rổ cho người khác xài
+            _channelPool.Add(channel);
         }
 
         public void Dispose()
         {
-            _channel?.Dispose();
+            foreach (var channel in _channelPool) channel?.Dispose();
             _connection?.Dispose();
         }
     }

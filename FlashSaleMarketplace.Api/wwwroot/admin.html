@@ -7,10 +7,67 @@
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-900 text-white p-8 font-sans">
+    
+    <!-- KHU VỰC 1: REACT APP (TOP 5 & WEBHOOK) -->
     <div id="root"></div>
 
+    <!-- KHU VỰC 2: CONTROL PANEL (ĐÃ ĐƯỢC CHUẨN HÓA TAILWIND CSS) -->
+    <div class="max-w-6xl mx-auto mt-8 bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700">
+        <h2 class="text-2xl font-bold text-sky-400 mb-6">🚀 Control Panel: Mô Phỏng Tải JMeter</h2>
+        
+        <div class="flex flex-wrap gap-6 items-end mb-6">
+            <div>
+                <label class="block text-sm font-bold mb-2 text-slate-300">Tổng số Requests:</label>
+                <!-- Đã fix màu chữ/nền: bg-slate-900 text-white -->
+                <input type="number" id="txtTotalReq" value="150000" 
+                       class="bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono text-sm w-36 focus:outline-none focus:border-sky-500 transition" />
+            </div>
+            <div>
+                <label class="block text-sm font-bold mb-2 text-slate-300">Luồng (Threads):</label>
+                <input type="number" id="txtThreads" value="500" 
+                       class="bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono text-sm w-32 focus:outline-none focus:border-sky-500 transition" />
+            </div>
+            <button id="btnReset" onclick="resetDatabase()" 
+                    class="bg-rose-600 hover:bg-rose-500 text-white font-bold py-2 px-6 rounded-lg transition shadow-[0_0_10px_rgba(225,29,72,0.4)]">
+                🔄 1. Reset Database
+            </button>
+            <button id="btnStart" onclick="startLoadTest()" 
+                    class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-6 rounded-lg transition shadow-[0_0_10px_rgba(5,150,105,0.4)]">
+                🔥 2. Bắn Tải (Start)
+            </button>
+            <button id="btnStop" onclick="stopLoadTest()" style="display: none;"
+                    class="bg-slate-600 hover:bg-slate-500 text-white font-bold py-2 px-6 rounded-lg transition shadow-[0_0_10px_rgba(100,116,139,0.4)]">
+                ⏹️ 3. Dừng Lại (Stop)
+            </button>
+        </div>
+
+        <div class="w-full mt-6 p-4 border border-slate-600 border-dashed rounded-lg bg-slate-800/50">
+            <h3 class="text-amber-400 font-bold mb-3 flex items-center gap-2">
+                ⏳ Hẹn giờ Bùng nổ Flash Sale (Realtime Test)
+            </h3>
+            <div class="flex gap-4">
+                <button onclick="scheduleEvent(10)" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-bold transition shadow-[0_0_10px_rgba(79,70,229,0.4)]">
+                    ⏱️ Bắt đầu sau 10 giây
+                </button>
+                <button onclick="scheduleEvent(3600)" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-bold transition shadow-[0_0_10px_rgba(79,70,229,0.4)]">
+                    ⏰ Bắt đầu sau 1 tiếng
+                </button>
+                <button onclick="scheduleEvent(0)" class="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded text-sm font-bold transition shadow-[0_0_10px_rgba(225,29,72,0.4)]">
+                    🔥 Bắt đầu NGAY LẬP TỨC
+                </button>
+            </div>
+        </div>
+        
+        <!-- Biểu đồ hiển thị Throughput Real-time -->
+        <div class="h-72 bg-slate-900 p-4 rounded-lg border border-slate-700 shadow-inner">
+            <canvas id="throughputChart"></canvas>
+        </div>
+    </div>
+
+    <!-- SCRIPT REACT CHO BẢNG TOP 5 -->
     <script type="text/babel">
         const { useState, useEffect } = React;
 
@@ -20,8 +77,8 @@
             const [paymentMethod, setPaymentMethod] = useState('VNPay');
             const [message, setMessage] = useState(null);
             const [isSuccess, setIsSuccess] = useState(true);
+            const [currentTime, setCurrentTime] = useState(new Date());
 
-            // 1. Hàm gọi API lấy Top 5
             const loadTopSelling = () => {
                 fetch('/api/report/top-selling')
                     .then(res => res.json())
@@ -29,108 +86,136 @@
                         if(response.success && response.data) {
                             setTopProducts(response.data);
                         }
-                    });
+                    })
+                    .catch(err => console.log("Đang chờ Server..."));
             };
 
-            // Load lần đầu khi mở trang
-            useEffect(() => { loadTopSelling(); }, []);
+            useEffect(() => { 
+                loadTopSelling(); 
+                window.refreshTopSelling = loadTopSelling;
+                const pollingInterval = setInterval(() => { loadTopSelling(); }, 1500);
+                const clockInterval = setInterval(() => setCurrentTime(new Date()), 1000);
 
-            // 2. Hàm gọi API giả lập Webhook Thanh toán
+                return () => { 
+                    clearInterval(pollingInterval);
+                    clearInterval(clockInterval);
+                    delete window.refreshTopSelling; 
+                };
+            }, []);
+
+            const getEventStatus = (startTime, endTime) => {
+                const start = new Date(startTime);
+                const end = new Date(endTime);
+                const now = currentTime;
+
+                if (now < start) return { label: 'Sắp diễn ra', color: 'text-amber-400 bg-amber-900/30 border-amber-700' };
+                if (now >= start && now <= end) return { label: '🔥 Đang mở bán', color: 'text-emerald-400 bg-emerald-900/30 border-emerald-700 animate-pulse' };
+                return { label: 'Đã kết thúc', color: 'text-rose-400 bg-rose-900/30 border-rose-700' };
+            };
+
+            const formatMoney = (amount) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+
             const handlePayment = () => {
-                if(!orderId) {
-                    setMessage("Vui lòng nhập OrderID!");
-                    setIsSuccess(false);
-                    return;
-                }
-
+                if(!orderId) { setMessage("Vui lòng nhập OrderID!"); setIsSuccess(false); return; }
                 setMessage("Đang xử lý thanh toán...");
-                
                 fetch('/api/payment/callback', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ orderId, paymentMethod })
-                })
-                .then(res => res.json())
-                .then(response => {
+                }).then(res => res.json()).then(response => {
                     setMessage(response.message);
                     setIsSuccess(response.success !== false);
-                    
-                    if(response.success !== false) {
-                        setOrderId(''); // Xóa ô nhập sau khi thành công
-                        loadTopSelling(); // Cập nhật lại biểu đồ ngay lập tức
-                    }
-                })
-                .catch(err => {
-                    setMessage("Lỗi kết nối đến Server!");
-                    setIsSuccess(false);
-                });
+                    if(response.success !== false) { setOrderId(''); loadTopSelling(); }
+                }).catch(() => { setMessage("Lỗi kết nối đến Server!"); setIsSuccess(false); });
             };
-
-            // Tìm giá trị bán lớn nhất để tính % chiều rộng biểu đồ
-            const maxSold = Math.max(...topProducts.map(p => p.sold), 1);
 
             return (
                 <div className="max-w-6xl mx-auto grid grid-cols-3 gap-8">
-                    
-                    {/* BẢNG BÁO CÁO TOP 5 (BÊN TRÁI) */}
                     <div className="col-span-2 bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700">
                         <div className="flex justify-between items-center mb-6">
                             <h2 className="text-2xl font-bold text-emerald-400">📊 Top 5 Bán Chạy Nhất</h2>
-                            <button onClick={loadTopSelling} className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm font-bold transition">
-                                🔄 Làm mới
-                            </button>
+                            <span className="text-slate-400 font-mono">{currentTime.toLocaleTimeString('vi-VN')}</span>
                         </div>
-                        
                         <div className="space-y-6">
-                            {topProducts.map((p, idx) => (
-                                <div key={idx}>
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="font-semibold text-slate-200">{p.productName}</span>
-                                        <span className="text-emerald-400 font-bold">{p.sold} / {p.total} suất</span>
+                            {topProducts.map((p, idx) => {
+                                const normalSold = Number(p.normalSold || 0);
+                                const flashSaleSold = Number(p.flashSaleSold || 0);
+                                const totalStock = Number(p.totalStock || p.total || 1);
+                                const sold = normalSold + flashSaleSold;
+                                const status = getEventStatus(p.startTime, p.endTime);
+
+                                // Compute percentages and scale down if >100%
+                                const flashPercent = totalStock > 0 ? (flashSaleSold / totalStock) * 100 : 0;
+                                const normalPercent = totalStock > 0 ? (normalSold / totalStock) * 100 : 0;
+                                const totalPercent = flashPercent + normalPercent;
+                                const scale = totalPercent > 100 ? 100 / totalPercent : 1;
+                                const displayFlash = flashPercent * scale;
+                                const displayNormal = normalPercent * scale;
+
+                                return (
+                                    <div key={idx} className="bg-slate-900/50 p-3 rounded-lg border border-slate-700/50">
+                                        <div className="flex justify-between text-sm mb-2">
+                                            <div className="flex flex-col">
+                                                <span className="font-semibold text-slate-200">{p.productName}</span>
+                                                <span className="text-amber-400 font-bold text-xs mt-1">{formatMoney(p.flashSalePrice)}</span>
+                                            </div>
+                                            <div className="flex flex-col items-end">
+                                                <span className={`text-[10px] px-2 py-1 border rounded-full font-bold mb-1 ${status.color}`}>
+                                                    {status.label}
+                                                </span>
+                                                <span className="text-emerald-400 font-bold text-xs">{sold} / {totalStock} suất</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <div className="w-full bg-slate-700 rounded-full h-4 overflow-hidden shadow-inner flex">
+                                                {displayFlash > 0 && (
+                                                    <div
+                                                        className="bg-gradient-to-r from-red-500 to-orange-500 h-4 transition-all duration-500 ease-out"
+                                                        style={{ width: `${displayFlash}%` }}
+                                                    ></div>
+                                                )}
+                                                {displayNormal > 0 && (
+                                                    <div
+                                                        className="bg-emerald-500 h-4 transition-all duration-500 ease-out"
+                                                        style={{ width: `${displayNormal}%` }}
+                                                    ></div>
+                                                )}
+                                            </div>
+                                            <div className="text-[10px] text-slate-400 font-mono">
+                                                🔥 Flash: {flashSaleSold} | 📦 Thường: {normalSold} / Tổng: {totalStock}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="w-full bg-slate-700 rounded-full h-4 overflow-hidden">
-                                        <div className="bg-emerald-500 h-4 rounded-full transition-all duration-1000 ease-out" 
-                                             style={{ width: `${(p.sold / maxSold) * 100}%` }}></div>
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                             {topProducts.length === 0 && <p className="text-slate-400 italic">Chưa có dữ liệu bán hàng.</p>}
                         </div>
                     </div>
 
-                    {/* GIẢ LẬP THANH TOÁN SAGA (BÊN PHẢI) */}
                     <div className="bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700 h-fit">
                         <h2 className="text-2xl font-bold text-amber-400 mb-4">💳 Webhook Thanh toán</h2>
-                        <p className="text-sm text-slate-400 mb-4">
-                            Nhập mã OrderID (GUID) để hoàn tất chu trình Saga Checkout.
-                        </p>
-
+                        <p className="text-sm text-slate-400 mb-4">Nhập mã OrderID (GUID) để hoàn tất chu trình Saga Checkout.</p>
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-bold mb-2">Mã Đơn Hàng (OrderID):</label>
-                                <input type="text" 
-                                       value={orderId} 
-                                       onChange={(e) => setOrderId(e.target.value)}
-                                       className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono text-sm"
-                                       placeholder="VD: ccc492e-2f9f..." />
+                                <input type="text" value={orderId} onChange={(e) => setOrderId(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white font-mono text-sm focus:border-amber-400 focus:outline-none"
+                                    placeholder="VD: ccc492e-2f9f..." />
                             </div>
-
                             <div>
                                 <label className="block text-sm font-bold mb-2">Cổng Thanh Toán:</label>
-                                <select value={paymentMethod} 
-                                        onChange={(e) => setPaymentMethod(e.target.value)}
-                                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}
+                                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-amber-400 focus:outline-none">
                                     <option value="VNPay">VNPay</option>
                                     <option value="Momo">Ví Momo</option>
                                     <option value="ZaloPay">ZaloPay</option>
                                 </select>
                             </div>
-
                             <button onClick={handlePayment} 
                                     className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-lg transition shadow-[0_0_15px_rgba(217,119,6,0.5)]">
                                 🚀 Xác Nhận Thanh Toán
                             </button>
-
                             {message && (
                                 <div className={`p-3 rounded text-sm font-bold ${isSuccess ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-500' : 'bg-red-900/50 text-red-400 border border-red-500'}`}>
                                     {message}
@@ -138,13 +223,145 @@
                             )}
                         </div>
                     </div>
-
                 </div>
             );
         }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<AdminDashboard />);
+    </script>
+
+    <!-- SCRIPT VANILLA JS CHO CHART VÀ CALL API TEST -->
+    <script>
+        const ctx = document.getElementById('throughputChart').getContext('2d');
+        const throughputChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], 
+                datasets: [{
+                    label: 'Tốc độ chốt đơn (Đơn/giây)',
+                    data: [],
+                    borderColor: '#38bdf8', // Màu sky-400
+                    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 3
+                }]
+            },
+            options: {
+                responsive: true, 
+                maintainAspectRatio: false,
+                scales: { 
+                    y: { beginAtZero: true, grid: { color: '#334155' } },
+                    x: { grid: { color: '#334155' } }
+                },
+                animation: false,
+                plugins: {
+                    legend: { labels: { color: '#cbd5e1' } }
+                }
+            }
+        });
+
+        async function resetDatabase() {
+            const btn = document.getElementById('btnReset');
+            btn.innerHTML = '⏳ Đang dọn dẹp...'; btn.disabled = true;
+            try {
+                const res = await fetch('/api/admin/test/reset', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                
+                throughputChart.data.labels = [];
+                throughputChart.data.datasets[0].data = [];
+                throughputChart.update();
+                lastOrderCount = 0;
+                
+                if(window.refreshTopSelling) window.refreshTopSelling(); 
+            } finally {
+                btn.innerHTML = '🔄 1. Reset Database'; btn.disabled = false;
+            }
+        }
+
+        async function startLoadTest() {
+            const total = document.getElementById('txtTotalReq').value;
+            const threads = document.getElementById('txtThreads').value;
+            
+            // Đổi giao diện: Ẩn nút Start, Hiện nút Stop
+            document.getElementById('btnStart').style.display = 'none';
+            document.getElementById('btnStop').style.display = 'block';
+
+            await fetch('/api/admin/test/start-load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ TotalRequests: parseInt(total), ConcurrentThreads: parseInt(threads) })
+            });
+            
+            startMonitoring();
+        }
+
+        async function stopLoadTest() {
+            await fetch('/api/admin/test/stop-load', { method: 'POST' });
+            
+            // Đổi giao diện về như cũ
+            document.getElementById('btnStart').style.display = 'block';
+            document.getElementById('btnStop').style.display = 'none';
+        }
+
+        async function scheduleEvent(delaySeconds) {
+            const res = await fetch('/api/admin/test/schedule', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ DelaySeconds: delaySeconds, DurationMinutes: 60 }) // Flash sale diễn ra 60 phút
+            });
+            const data = await res.json();
+            alert(data.message);
+            
+            // Ép bảng Top 5 load lại ngay lập tức để Badge chuyển sang "Sắp diễn ra"
+            if(window.refreshTopSelling) window.refreshTopSelling();
+        }
+
+        let monitoringInterval;
+        let lastOrderCount = 0;
+        let timeTick = 0;
+
+        function startMonitoring() {
+            clearInterval(monitoringInterval);
+            timeTick = 0;
+            
+            // GIẢM XUỐNG 200ms ĐỂ CHỤP KỊP TỐC ĐỘ QUÁ NHANH CỦA REDIS
+            monitoringInterval = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/report/realtime-summary');
+                    const data = await res.json();
+                    
+                    const currentTotalOrders = data.tongDaBan || 0; 
+                    
+                    // Số đơn trong 0.2s -> Nhân 5 để ra TPS (Tốc độ trên 1 giây)
+                    const tps = (currentTotalOrders - lastOrderCount) * 5; 
+                    lastOrderCount = currentTotalOrders;
+
+                    timeTick += 0.2; // Tiến lên 0.2 giây
+                    throughputChart.data.labels.push(timeTick.toFixed(1) + 's');
+                    throughputChart.data.datasets[0].data.push(tps);
+                    
+                    // Hiển thị 50 mốc thời gian cho rộng biểu đồ
+                    if (throughputChart.data.labels.length > 50) {
+                        throughputChart.data.labels.shift();
+                        throughputChart.data.datasets[0].data.shift();
+                    }
+                    throughputChart.update();
+
+                    if(window.refreshTopSelling) window.refreshTopSelling();
+
+                    // Nếu bán đủ 4995 -> 5000 đơn thì dừng đo
+                    if (currentTotalOrders >= 4995 && tps === 0) {
+                        clearInterval(monitoringInterval);
+                        document.getElementById('btnStart').style.display = 'block';
+                        document.getElementById('btnStop').style.display = 'none';
+                    }
+                } catch(e) { console.error(e); }
+            }, 200); // <-- Thay số 1000 thành 200 ở đây
+        }
     </script>
 </body>
 </html>
