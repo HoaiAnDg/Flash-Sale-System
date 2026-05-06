@@ -34,6 +34,7 @@ namespace FlashSaleMarketplace.Api.Services
             // 3. Sử dụng Atomic Operators ($push, $setOnInsert)
             var update = Builders<Cart>.Update
                 .Push(c => c.Items, newItem)
+                .Set(c => c.LastModified, DateTime.UtcNow)
                 .SetOnInsert(c => c.Status, "active")
                 .SetOnInsert(c => c.UserId, request.UserId);
 

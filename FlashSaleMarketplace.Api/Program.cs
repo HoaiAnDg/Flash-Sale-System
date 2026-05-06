@@ -25,6 +25,40 @@ builder.Services.AddScoped<IMongoDatabase>(sp =>
     return client.GetDatabase(mongoDbName);
 });
 
+// FIX 5: TTL Index — Tự xóa cart không hoạt động sau 7 ngày
+using (var scope = new ServiceCollection()
+    .BuildServiceProvider()
+    .CreateScope())
+{
+    try
+    {
+        var mongoClient = new MongoClient(mongoConnectionString);
+        var mongoDatabase = mongoClient.GetDatabase(mongoDbName);
+        var cartCollection = mongoDatabase.GetCollection<MongoDB.Bson.BsonDocument>("Carts");
+
+        var ttlIndexKey = Builders<MongoDB.Bson.BsonDocument>.IndexKeys.Ascending("lastModified");
+        var ttlIndexOptions = new CreateIndexOptions
+        {
+            ExpireAfter = TimeSpan.FromDays(7),
+            Name = "TTL_lastModified_7days"
+        };
+
+        cartCollection.Indexes.CreateOneAsync(
+            new CreateIndexModel<MongoDB.Bson.BsonDocument>(ttlIndexKey, ttlIndexOptions)
+        ).Wait();
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine("[MONGODB] TTL Index đã được tạo: Cart sẽ tự xóa sau 7 ngày không hoạt động");
+        Console.ResetColor();
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"[MONGODB WARNING] TTL Index setup: {ex.Message}");
+        Console.ResetColor();
+    }
+}
+
 builder.Services.AddScoped<CartService>();
 
 // ==========================================
@@ -48,29 +82,37 @@ builder.Services.AddSingleton<FlashSaleMarketplace.Api.Messaging.RabbitMqProduce
 builder.Services.AddHostedService<FlashSaleMarketplace.Api.Workers.OrderProcessingWorker>();
 
 // ==========================================
-// 4. CẤU HÌNH RATE LIMITING (PHASE 4 - CHỐNG BOT THEO IP)
+// 4. CẤU HÌNH RATE LIMITING (PHASE 4 - CHỐNG BOT THEO IP + JWT UserID)
 // ==========================================
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
     
-    // Đổi từ AddFixedWindowLimiter (Toàn cục) sang AddPolicy (Phân vùng)
+    // FIX 3: Ưu tiên UserID từ JWT kết hợp IP để partition chính xác
     options.AddPolicy("FlashSaleLimit", httpContext =>
     {
-        // Tuyệt chiêu: Ưu tiên đọc IP giả lập từ JMeter (Header X-Real-IP)
-        // Nếu không có (người dùng thật) thì đọc IP thật của máy
+        // Thứ 1: Ưu tiên đọc UserID từ JWT (nếu user đã đăng nhập)
+        var userIdClaim = httpContext.User?
+            .FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        // Thứ 2: Nếu không có JWT, dùng IP
         var clientIp = httpContext.Request.Headers["X-Real-IP"].ToString();
         if (string.IsNullOrEmpty(clientIp))
         {
             clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         }
 
-        // Tự động gom nhóm (Partition) các request theo từng IP
+        // Partition Key: Ưu tiên UserID (1 user = 1 partition dù đổi IP)
+        // Còn lại: IP-based (anonymous users)
+        var partitionKey = string.IsNullOrEmpty(userIdClaim)
+            ? $"ip:{clientIp}"
+            : $"user:{userIdClaim}";
+
         return RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: clientIp, 
+            partitionKey: partitionKey, 
             factory: partition => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 5, // Mỗi IP khác nhau được phép gọi 5 lần / giây
+                PermitLimit = 5, // Mỗi user/IP khác nhau được phép gọi 5 lần / giây
                 Window = TimeSpan.FromSeconds(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 QueueLimit = 0

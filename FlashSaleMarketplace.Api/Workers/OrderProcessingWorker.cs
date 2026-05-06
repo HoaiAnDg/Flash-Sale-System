@@ -2,7 +2,7 @@ using System.Data;
 using System.Text;
 using System.Text.Json;
 using Dapper;
-using FlashSaleMarketplace.Api.Models; // Dùng để gọi model Cart
+using FlashSaleMarketplace.Api.Models; 
 using Microsoft.Data.SqlClient;
 using MongoDB.Driver;
 using RabbitMQ.Client;
@@ -90,39 +90,51 @@ namespace FlashSaleMarketplace.Api.Workers
                     var mongoDb = scope.ServiceProvider.GetRequiredService<IMongoDatabase>();
                     var cartCollection = mongoDb.GetCollection<Cart>("Carts");
 
-                    var filter = Builders<Cart>.Filter.Eq(c => c.UserId, orderData.UserId);
-                    var update = Builders<Cart>.Update.PullFilter(c => c.Items, i => i.VariantId == orderData.VariantId);
+                    // FIX 4: Retry MongoDB với exponential backoff (3 lần)
+                    int maxMongoRetry = 3;
+                    bool mongoSyncSuccess = false;
 
-                    int maxRetries = 3;
-                    bool syncSuccess = false;
-
-                    for (int retry = 1; retry <= maxRetries; retry++)
+                    for (int r = 0; r < maxMongoRetry; r++)
                     {
                         try
                         {
-                            await cartCollection.UpdateOneAsync(filter, update);
-                            syncSuccess = true;
+                            // Chọc vào Mongo, rút cái Item đã mua ra khỏi mảng Items
+                            // ĐỒNG THỜI cập nhật LastModified để duy trì TTL Index
+                            var filter = Builders<Cart>.Filter.Eq(c => c.UserId, orderData.UserId);
+                            var update = Builders<Cart>.Update
+                                .PullFilter(c => c.Items, i => i.VariantId == orderData.VariantId)
+                                .Set(c => c.LastModified, DateTime.UtcNow);
                             
+                            await cartCollection.UpdateOneAsync(filter, update);
+
+                            // In log Xanh Lơ ra màn hình Console để ngắm
                             Console.ForegroundColor = ConsoleColor.Cyan;
-                            Console.WriteLine($"[DATA SYNC] Đã xóa Variant {orderData.VariantId} khỏi Mongo của User {orderData.UserId}");
+                            Console.WriteLine($"[DATA SYNC] Đã xóa Variant {orderData.VariantId} khỏi Giỏ hàng Mongo của User {orderData.UserId}");
                             Console.ResetColor();
-                            break; // Thành công thì thoát vòng lặp ngay
+
+                            mongoSyncSuccess = true;
+                            break; // Thành công, thoát vòng retry
                         }
                         catch (Exception mongoEx)
                         {
-                            Console.ForegroundColor = ConsoleColor.DarkYellow;
-                            Console.WriteLine($"[CẢNH BÁO] Đồng bộ Mongo thất bại lần {retry}. Thử lại sau 50ms... Lỗi: {mongoEx.Message}");
+                            // Backoff: 100ms → 200ms → 400ms
+                            int delayMs = (int)Math.Pow(2, r) * 100; 
+                            
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"[MONGO RETRY {r + 1}/{maxMongoRetry}] {mongoEx.Message} — thử lại sau {delayMs}ms");
                             Console.ResetColor();
-                            int retryDelay = (int)Math.Pow(2, retry) * 50; 
-                            await Task.Delay(retryDelay);
+
+                            if (r < maxMongoRetry - 1)
+                            {
+                                await Task.Delay(delayMs);
+                            }
                         }
                     }
 
-                    // Cơ chế Fallback (Báo cáo Admin) nếu thử 3 lần vẫn thất bại
-                    if (!syncSuccess)
+                    if (!mongoSyncSuccess)
                     {
-                        Console.ForegroundColor = ConsoleColor.DarkRed;
-                        Console.WriteLine($"[CẢNH BÁO NGHIÊM TRỌNG] User {orderData.UserId} đã chốt đơn nhưng KHÔNG THỂ xóa giỏ hàng Mongo!");
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"[MONGO SYNC FAILED] Sau {maxMongoRetry} lần retry, vẫn không đồng bộ được Giỏ hàng cho User {orderData.UserId}");
                         Console.ResetColor();
                         // Ở hệ thống thực tế, ta sẽ Insert lỗi này vào 1 bảng SQL tên là "Sync_Errors" để Admin xử lý tay sau.
                     }

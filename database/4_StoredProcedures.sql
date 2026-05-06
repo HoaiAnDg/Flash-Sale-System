@@ -294,6 +294,9 @@ GO
 -- =================================================================================
 -- PHẦN 3: sp_CancelExpired — HOÀN KHO TỰ ĐỘNG
 -- =================================================================================
+-- ⚠️  TODO: Sau khi SP này chạy, Application layer PHẢI INCR Redis key
+--     fs:stock:variant:{VariantID} cho mỗi đơn bị hủy
+-- =================================================================================
 
 IF OBJECT_ID('dbo.sp_CancelExpired', 'P') IS NOT NULL
     DROP PROCEDURE dbo.sp_CancelExpired;
@@ -446,4 +449,81 @@ END;
 GO
 
 PRINT N'[OK] sp_UserCancel da tao thanh cong.';
+GO
+
+-- =================================================================================
+-- PHẦN 5: sp_EventSummary — BÁO CÁO TỔNG KẾT EVENT
+-- =================================================================================
+-- Lấy thống kê toàn bộ một event: số đơn, doanh thu, hiệu suất lấp đầy
+-- ResultCode:
+--    0  = Thành công
+--   -1  = Event không tồn tại
+--   -99 = Lỗi hệ thống
+-- =================================================================================
+
+IF OBJECT_ID('dbo.sp_EventSummary', 'P') IS NOT NULL
+    DROP PROCEDURE dbo.sp_EventSummary;
+GO
+
+CREATE PROCEDURE dbo.sp_EventSummary
+    @EventID INT,
+    @ResultCode INT OUTPUT,
+    @ResultMsg NVARCHAR(500) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @ResultCode = -99;
+    SET @ResultMsg = N'Loi he thong';
+
+    BEGIN TRY
+        -- Kiểm tra event tồn tại
+        IF NOT EXISTS (SELECT 1 FROM FlashSaleEvents WHERE EventID = @EventID)
+        BEGIN
+            SET @ResultCode = -1;
+            SET @ResultMsg = N'Event khong ton tai';
+            RETURN;
+        END
+
+        -- Query tổng kết event
+        SELECT
+            e.EventID,
+            e.Title                                     AS EventTitle,
+            e.StartTime,
+            e.EndTime,
+            COUNT(DISTINCT o.OrderID)                  AS TongDonHang,
+            SUM(CASE WHEN o.Status=1 THEN 1 END)       AS DonThanhCong,
+            SUM(CASE WHEN o.Status=2 THEN 1 END)       AS DonHuy,
+            SUM(CASE WHEN o.Status=0 THEN 1 END)       AS DonConPending,
+            ISNULL(SUM(CASE WHEN o.Status=1 THEN o.TotalAmount END), 0) AS DoanhThuThucTe,
+            -- Tỉ lệ chuyển đổi (%)
+            CASE 
+                WHEN COUNT(DISTINCT o.OrderID) = 0 THEN 0
+                ELSE ROUND(100.0 * SUM(CASE WHEN o.Status=1 THEN 1 END) / COUNT(DISTINCT o.OrderID), 2)
+            END AS TiLeChuyenDoi_Pct,
+            -- Tổng suất đã phân bổ vs đã bán thực tế
+            SUM(fsi.TotalAllocated)                     AS TongSuatPhanBo,
+            SUM(fsi.SoldQuantity)                       AS TongSuatDaBan,
+            -- Hiệu suất lấp đầy (%)
+            CASE
+                WHEN SUM(fsi.TotalAllocated) = 0 THEN 0
+                ELSE ROUND(100.0 * SUM(fsi.SoldQuantity) / SUM(fsi.TotalAllocated), 2)
+            END AS HieuSuatLapDay_Pct
+        FROM FlashSaleEvents e
+        LEFT JOIN FlashSaleItems fsi ON e.EventID = fsi.EventID
+        LEFT JOIN OrderDetails od ON fsi.VariantID = od.VariantID
+        LEFT JOIN Orders o ON od.OrderID = o.OrderID
+        WHERE e.EventID = @EventID
+        GROUP BY e.EventID, e.Title, e.StartTime, e.EndTime;
+
+        SET @ResultCode = 0;
+        SET @ResultMsg = N'Lay bao cao thanh cong';
+    END TRY
+    BEGIN CATCH
+        SET @ResultCode = -99;
+        SET @ResultMsg = ERROR_MESSAGE();
+    END CATCH;
+END;
+GO
+
+PRINT N'[OK] sp_EventSummary da tao thanh cong.';
 GO

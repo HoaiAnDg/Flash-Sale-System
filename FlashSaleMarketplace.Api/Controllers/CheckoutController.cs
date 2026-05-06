@@ -40,19 +40,34 @@ namespace FlashSaleMarketplace.Api.Controllers
             public DateTime EndTime { get; set; }
         }
 
+        // =========================================================================
+        // API MỚI: Dọn cỗ lên RAM (Chạy 1 lần trước khi diễn ra Flash Sale)
+        // =========================================================================
         [HttpPost("preload-redis")]
         public async Task<IActionResult> PreloadRedis()
         {
             await _redisDb.KeyDeleteAsync("fs:active_variants"); 
 
             using var connection = new SqlConnection(_sqlConnectionString);
-            var items = await connection.QueryAsync<dynamic>("SELECT EventID, VariantID, TotalAllocated FROM FlashSaleItems");
+            
+            // Tìm 5 món đang được Sale — chỉ định rõ tên bảng để tránh ambiguous column
+            var items = await connection.QueryAsync<dynamic>("SELECT fsi.EventID, fsi.VariantID, fsi.TotalAllocated, fse.StartTime, fse.EndTime FROM FlashSaleItems fsi INNER JOIN FlashSaleEvents fse ON fsi.EventID = fse.EventID");
 
             foreach (var item in items)
             {
                 await _redisDb.StringSetAsync($"fs:stock:variant:{item.VariantID}", (int)item.TotalAllocated);
                 await _redisDb.SetAddAsync("fs:active_variants", (int)item.VariantID);
                 await _redisDb.StringSetAsync($"fs:event:variant:{item.VariantID}", (int)item.EventID);
+
+                // FIX 6: Thêm key fs:event:active:{variantId} để kiểm tra event còn hoạt động
+                // Key này tự hết hạn khi event kết thúc
+                DateTime endTime = item.EndTime;
+                TimeSpan expiry = endTime > DateTime.UtcNow ? endTime - DateTime.UtcNow : TimeSpan.Zero;
+                
+                if (expiry > TimeSpan.Zero)
+                {
+                    await _redisDb.StringSetAsync($"fs:event:active:{item.VariantID}", "1", expiry);
+                }
             }
 
             return Ok(new { message = "Khởi tạo Kho hàng trên Redis (RAM) thành công!" });
@@ -71,19 +86,36 @@ namespace FlashSaleMarketplace.Api.Controllers
                 string stockKey = $"fs:stock:variant:{variantId}";
                 string userKey = $"fs:userbought:{variantId}:{request.UserId}"; 
 
-                string luaScript = @"
-                    if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
-                    local stock = tonumber(redis.call('GET', KEYS[1]))
-                    if stock == nil or stock <= 0 then return -2 end
-                    redis.call('DECR', KEYS[1])      
-                    redis.call('SET', KEYS[2], '1')  
-                    return 1
-                ";
+            // FIX 6: Lua Script kiểm tra event còn active trước khi cho phép mua
+            string luaScript = @"
+                -- Check 1: Event còn active không? (key tự hết hạn khi event kết thúc)
+                if redis.call('EXISTS', KEYS[3]) == 0 then
+                    return -3 -- Event chưa bắt đầu hoặc đã kết thúc
+                end
+                
+                -- Check 2: User đã mua rồi?
+                if redis.call('EXISTS', KEYS[2]) == 1 then
+                    return -1 -- User đã mua rồi
+                end
+                
+                -- Check 3: Còn kho không?
+                local stock = tonumber(redis.call('GET', KEYS[1]))
+                if stock == nil or stock <= 0 then
+                    return -2 -- Đã hết kho
+                end
+                
+                -- Atomic operation: Giảm kho + Mark user đã mua
+                redis.call('DECR', KEYS[1])      
+                redis.call('SET', KEYS[2], '1')  
+                return 1 -- Thành công
+            ";
 
-                var luaResult = (int)await _redisDb.ScriptEvaluateAsync(luaScript, new RedisKey[] { stockKey, userKey });
+            var luaResult = (int)await _redisDb.ScriptEvaluateAsync(luaScript, 
+                new RedisKey[] { stockKey, userKey, $"fs:event:active:{variantId}" });
 
                 if (luaResult == -1) return StatusCode(400, new { message = "Bạn đã mua sản phẩm này rồi!" });
                 if (luaResult == -2) return StatusCode(400, new { message = "Rất tiếc! Đã hết suất Flash Sale." });
+                if (luaResult == -3) return StatusCode(400, new { message = "Sự kiện Flash Sale chưa bắt đầu hoặc đã kết thúc." });
 
                 int eventId = (int)await _redisDb.StringGetAsync($"fs:event:variant:{variantId}");
                 
@@ -101,6 +133,9 @@ namespace FlashSaleMarketplace.Api.Controllers
             }
         }
 
+        // =========================================================================
+        // CHỐT ĐƠN & PHÂN LOẠI (FLASH SALE vs HÀNG THƯỜNG)
+        // =========================================================================
         [HttpPost("process")]
         public async Task<IActionResult> ProcessCheckout([FromBody] CheckoutRequest request)
         {
